@@ -183,6 +183,8 @@ extern long kgr_stub_execve(unsigned long, unsigned long, unsigned long,
 			    unsigned long, unsigned long, unsigned long);
 extern long kgr_stub_execveat(unsigned long, unsigned long, unsigned long,
 			      unsigned long, unsigned long, unsigned long);
+extern long kgr_stub_rt_sigreturn(unsigned long, unsigned long, unsigned long,
+				  unsigned long, unsigned long, unsigned long);
 
 static __init void syscalls_init(void)
 {
@@ -191,6 +193,7 @@ static __init void syscalls_init(void)
 		sizeof(kgr_replaced_sys_call_table));
 	kgr_replaced_sys_call_table[__NR_execve] = kgr_stub_execve;
 	kgr_replaced_sys_call_table[__NR_execveat] = kgr_stub_execveat;
+	kgr_replaced_sys_call_table[__NR_rt_sigreturn] = kgr_stub_rt_sigreturn;
 }
 
 static gate_desc kgr_idt_table[NR_VECTORS] __page_aligned_bss;
