@@ -5,7 +5,9 @@
 #include <asm/desc.h>
 #include <asm/traps.h>
 #include <asm/hypervisor.h>
+#include <linux/tracepoint.h>
 #include "patch_entry_kallsyms.h"
+#include "patch_entry.h"
 
 struct kgr_call_reloc
 {
@@ -632,20 +634,6 @@ static int __init idt_tables_init(void)
 	return kgr_intr_init();
 }
 
-int __init patch_entry_init(void)
-{
-	int ret = patch_entry_text();
-	if (ret)
-		return ret;
-
-	syscalls_init();
-	ret = idt_tables_init();
-	if (ret)
-		return ret;
-
-	return ret;
-}
-
 static unsigned long orig_idt;
 static unsigned long orig_debug_idt;
 static unsigned long orig_trace_idt;
@@ -697,8 +685,10 @@ static inline void kgr_load_current_idt(void)
 }
 
 
-void patch_entry_apply(void)
+void patch_entry_apply_start(void)
 {
+	try_module_get(THIS_MODULE);
+
 	orig_idt = (unsigned long)&kgr_idt_table[0];
 	orig_debug_idt = (unsigned long)&kgr_debug_idt_table[0];
 	orig_trace_idt = (unsigned long)&kgr_trace_idt_table[0];
@@ -708,7 +698,7 @@ void patch_entry_apply(void)
 	orig_trace_idt = xchg(&kgr_trace_idt_descr->address, orig_trace_idt);
 }
 
-void patch_entry_unapply(void)
+void patch_entry_unapply_start(void)
 {
 	xchg(&kgr_idt_descr->address, orig_idt);
 	xchg(&kgr_debug_idt_descr->address, orig_debug_idt);
@@ -739,4 +729,232 @@ void patch_entry_unapply_finish_cpu(void)
 	wrmsrl(MSR_CSTAR, (unsigned long)*kgr_orig_entry_SYSCALL_compat);
 	wrmsrl_safe(MSR_IA32_SYSENTER_EIP,
 		(u64)*kgr_orig_entry_SYSENTER_compat);
+}
+
+
+/* Protect the entry code to make it safe for unmapping */
+DEFINE_PER_CPU(long, __entry_refcnt);
+
+/*
+ * Indirect pointer usable with patch_entry_text(), i.e. from replaced
+ * entry code.
+ */
+long __percpu * const entry_refcnt = &__entry_refcnt;
+
+static bool any_in_entry(void)
+{
+	long refcnt_percpu;
+	long refcnt_low = 0;
+	int refcnt_high = 0;
+	bool refcnt_low_is_negative;
+	int cpu;
+
+	for_each_possible_cpu(cpu) {
+		refcnt_low_is_negative = refcnt_low < 0 ? 1 : 0;
+		refcnt_percpu = *per_cpu_ptr(entry_refcnt, cpu);
+		refcnt_low += refcnt_percpu;
+
+		/* Check for overflow */
+		if (refcnt_low_is_negative ^ (refcnt_low < 0)) {
+			/* Change in sign, propagate carry to refcnt_high. */
+			if (refcnt_percpu < 0)
+				--refcnt_high;
+			else
+				++refcnt_high;
+		}
+	}
+
+	if (refcnt_high < 0 || (!refcnt_high && refcnt_high < 0)) {
+		/* Huh, overall refcount is < 0? How can that happen? */
+		pr_warn("entry code reference count is < 0");
+	}
+
+	return (refcnt_low || refcnt_high);
+}
+
+extern void (*kgr_signal_wake_up_state)(struct task_struct *t, unsigned int state);
+
+/* from linux/sched.h */
+/* calls non-exported signal_wake_up_state() */
+static inline void kgr_signal_wake_up(struct task_struct *t, bool resume)
+{
+	kgr_signal_wake_up_state(t, resume ? TASK_WAKEKILL : 0);
+}
+
+extern rwlock_t *kgr_tasklist_lock;
+
+
+static void kick_all_owners(void)
+{
+	struct task_struct *p, *t;
+
+	read_lock(kgr_tasklist_lock);
+	for_each_process_thread(p, t) {
+		if (!(t->flags & PF_KTHREAD) &&
+		     (task_thread_info(t)->flags & KGR__TIF_OWNS_ENTRY_REFCNT_MASK)) {
+			spin_lock_irq(&t->sighand->siglock);
+			kgr_signal_wake_up(t, 0);
+			spin_unlock_irq(&t->sighand->siglock);
+		}
+	}
+	read_unlock(kgr_tasklist_lock);
+}
+
+static void drain_work_fn(struct work_struct *work);
+static DECLARE_DELAYED_WORK(drain_work, drain_work_fn);
+
+void drain_work_fn(struct work_struct *work)
+{
+	if (any_in_entry()) {
+		kick_all_owners();
+		queue_delayed_work(system_power_efficient_wq, &drain_work, 10);
+		return;
+	}
+
+	module_put(THIS_MODULE);
+}
+
+void patch_entry_drain_start(void)
+{
+	if (!any_in_entry()) {
+		module_put(THIS_MODULE);
+		return;
+	}
+
+	pr_info("still some user tasks in to be unmapped entry code,"
+			" will recheck every 10 jiffies.\n");
+	kick_all_owners();
+	queue_delayed_work(system_power_efficient_wq, &drain_work, 10);
+}
+
+
+/*
+ * Userspace tasks about to exit won't ever return into the entry code
+ * and thus, won't have any chance to decrement their
+ * entry_refcnt reference. Track those exits.
+ */
+static void process_exit_tracer(void *data, struct task_struct *tsk)
+{
+	__u32 tif_owns_entry_refcnt =
+		task_thread_info(tsk)->flags & KGR__TIF_OWNS_ENTRY_REFCNT_MASK;
+
+	/*
+	 * This task is about to die and will never make it back into
+	 * the entry code. Verify that it entered through the replaced
+	 * entry code by checking its thread_info flags and decrement the
+	 * reference count if so.
+	 */
+	if (tif_owns_entry_refcnt != KGR__TIF_OWNS_ENTRY_REFCNT) {
+		if (tif_owns_entry_refcnt) {
+			pr_debug("unhandled entry refcnt ownership state at exit:"
+				 " %pT, 0x%08x\n", tsk, tif_owns_entry_refcnt);
+		}
+
+		return;
+	}
+
+	clear_tsk_thread_flag(tsk, KGR_TIF_OWNS_ENTRY_REFCNT);
+	this_cpu_dec(__entry_refcnt);
+}
+
+static void process_fork_tracer(void *data, struct task_struct *parent,
+				struct task_struct *new)
+{
+	/*
+	 * The newly duped task hasn't ever gone through entry from
+	 * userspace and thus, doesn't hold a reference on the entry
+	 * code. Furthermore, if a transition is currently in
+	 * progress, it can exit to user through the unmodified entry
+	 * code, c.f. kgr_schedule_tail(). Thus, it might end up
+	 * returning to userspace w/o getting its thread_info's
+	 * KGR_TIF_OWNS_ENTRY_REFCNT (inherited from parent) cleared.
+	 * If the fork exits soon, this will make task_exit_notifier()
+	 * from above errorneously decrement the reference count.
+	 * Prevent this by clearing that bit.
+	 */
+	__u32 tif_owns_entry_refcnt =
+		task_thread_info(new)->flags & KGR__TIF_OWNS_ENTRY_REFCNT_MASK;
+	if (!tif_owns_entry_refcnt)
+		return;
+
+	if (tif_owns_entry_refcnt != KGR__TIF_OWNS_ENTRY_REFCNT) {
+		pr_debug("unhandled entry refcnt ownership state at fork:"
+			 " %pT, 0x%08x\n", new, tif_owns_entry_refcnt);
+		return;
+	}
+
+	clear_tsk_thread_flag(new, KGR_TIF_OWNS_ENTRY_REFCNT);
+}
+
+
+struct tracepoint *kgr__tracepoint_sched_process_exit;
+struct tracepoint *kgr__tracepoint_sched_process_fork;
+
+int __init patch_entry_init(void)
+{
+	int ret, r;
+
+	ret = patch_entry_text();
+	if (ret) {
+		pr_err("failed to initialize entry text: %d\n", ret);
+		return ret;
+	}
+
+	syscalls_init();
+	ret = idt_tables_init();
+	if (ret) {
+		pr_err("failed to initialize the IDT: %d\n", ret);
+		return ret;
+	}
+
+	ret = tracepoint_probe_register(kgr__tracepoint_sched_process_exit,
+					process_exit_tracer, NULL);
+	if (ret) {
+		pr_err("failed to register exit probe: %d\n", ret);
+		return ret;
+	}
+
+	ret = tracepoint_probe_register(kgr__tracepoint_sched_process_fork,
+					process_fork_tracer, NULL);
+	if (ret) {
+		pr_err("failed to register fork probe: %d\n", ret);
+		r = tracepoint_probe_unregister(kgr__tracepoint_sched_process_exit,
+						process_exit_tracer, NULL);
+		tracepoint_synchronize_unregister();
+		if (r)
+			pr_err("failed to unregister task_exit hook: %d\n", r);
+		return ret;
+	}
+
+	/* This actually serves as a tracepoint_synchronize_register() */
+	tracepoint_synchronize_unregister();
+
+	return 0;
+}
+
+
+void patch_entry_cleanup(void)
+{
+	int ret;
+
+	ret = tracepoint_probe_unregister(kgr__tracepoint_sched_process_exit,
+					  process_exit_tracer, NULL);
+	if (ret) {
+		/*
+		 * That's impossible, but for debugging purposes,
+		 * print an error.
+		 */
+		pr_err("failed to unregister exit probe: %d\n", ret);
+	}
+
+	ret = tracepoint_probe_unregister(kgr__tracepoint_sched_process_fork,
+					  process_fork_tracer, NULL);
+	if (ret) {
+		/*
+		 * That's impossible, but for debugging purposes,
+		 * print an error.
+		 */
+		pr_err("failed to unregister fork probe: %d\n", ret);
+	}
+	tracepoint_synchronize_unregister();
 }

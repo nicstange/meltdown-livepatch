@@ -19,6 +19,9 @@ extern void (*kgr_orig_entry_SYSCALL_64)(void);
 extern void (*kgr_orig_entry_SYSCALL_compat)(void);
 extern void (*kgr_orig_entry_SYSENTER_compat)(void);
 
+extern struct tracepoint *kgr__tracepoint_sched_process_exit;
+extern struct tracepoint *kgr__tracepoint_sched_process_fork;
+
 #define PATCH_ENTRY_KALLSYMS						\
 	{ "core_kernel_text",						\
 			(void *)&kgr_core_kernel_text },		\
@@ -37,5 +40,9 @@ extern void (*kgr_orig_entry_SYSENTER_compat)(void);
 			(void *)&kgr_orig_entry_SYSCALL_compat },	\
 	{ "entry_SYSENTER_compat",					\
 			(void *)&kgr_orig_entry_SYSENTER_compat },	\
+	{ "__tracepoint_sched_process_exit",				\
+			(void *)&kgr__tracepoint_sched_process_exit },	\
+	{ "__tracepoint_sched_process_fork",				\
+			(void *)&kgr__tracepoint_sched_process_fork },	\
 
 #endif

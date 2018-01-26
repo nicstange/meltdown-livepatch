@@ -17,8 +17,8 @@
 #include <asm/pgtable_types.h>
 #include <linux/err.h>
 #include <asm/page_64_types.h>
-#include "patch_entry.h"
 #include "calling.h"
+#include "patch_entry.h"
 
 #if !IS_ENABLED(CONFIG_X86_64)
 #error "Livepatch supports only CONFIG_X86_64=y"
@@ -260,6 +260,9 @@ GLOBAL(kgr_entry_SYSCALL_64_after_swapgs)
 	pushq	%r11				/* pt_regs->r11 */
 	sub	$(6*8), %rsp			/* pt_regs->bp, bx, r12-15 not saved */
 
+	/* Patched */
+	KGR_ENTRY_ENTER
+
 	testl	$_TIF_WORK_SYSCALL_ENTRY, ASM_THREAD_INFO(TI_flags, %rsp, SIZEOF_PTREGS)
 	jnz	tracesys
 entry_SYSCALL_64_fastpath:
@@ -293,8 +296,12 @@ entry_SYSCALL_64_fastpath:
 	 * flags (TIF_NOTIFY_RESUME, TIF_USER_RETURN_NOTIFY, etc) set is
 	 * very bad.
 	 */
-	testl	$_TIF_ALLWORK_MASK, ASM_THREAD_INFO(TI_flags, %rsp, SIZEOF_PTREGS)
+	/* Patched to test KGR__TIF_ALLWORK_MASK */
+	testl	$KGR__TIF_ALLWORK_MASK, ASM_THREAD_INFO(TI_flags, %rsp, SIZEOF_PTREGS)
 	jnz	kgr_int_ret_from_sys_call_irqs_off	/* Go to the slow path */
+
+	/* Patched */
+	KGR_ENTRY_LEAVE
 
 	RESTORE_C_REGS_EXCEPT_RCX_R11
 	movq	RIP(%rsp), %rcx
@@ -373,6 +380,9 @@ GLOBAL(kgr_int_ret_from_sys_call)
 	KGR_CALL_PATCH kgr_syscall_return_slowpath
 	RESTORE_EXTRA_REGS
 	TRACE_IRQS_IRETQ		/* we're about to change IF */
+
+	/* Patched */
+	KGR_ENTRY_LEAVE
 
 	/*
 	 * Try to use SYSRET instead of IRET if we're returning to
@@ -619,6 +629,9 @@ END(kgr_irq_entries_start)
 	 */
 	SWAPGS
 
+	/* Patched */
+	KGR_ENTRY_ENTER
+
 	/*
 	 * We need to tell lockdep that IRQs are off.  We can't do this until
 	 * we fix gsbase, and we should do it before enter_from_user_mode
@@ -680,6 +693,10 @@ GLOBAL(kgr_retint_user)
 	/* Patched: call	prepare_exit_to_usermode */
 	KGR_CALL_PATCH kgr_prepare_exit_to_usermode
 	TRACE_IRQS_IRETQ
+
+	/* Patched */
+	KGR_ENTRY_LEAVE
+
 	SWAPGS
 	jmp	kgr_restore_regs_and_iret
 
@@ -956,7 +973,7 @@ ENTRY(kgr_xen_do_hypervisor_callback)		/* do_hypervisor_callback(struct *pt_regs
 	/* Patched: call	xen_maybe_preempt_hcall */
 	KGR_CALL_PATCH kgr_xen_maybe_preempt_hcall
 #endif
-	jmp	kgr_error_exit
+	jmp	kgr_error_exit  /* TODO: what about SWAPGS, i.e. %ebx? */
 END(kgr_xen_do_hypervisor_callback)
 
 /* Make it compatible with KGR_CALL_PATCH */
@@ -1011,7 +1028,7 @@ ENTRY(kgr_xen_failsafe_callback)
 	ALLOC_PT_GPREGS_ON_STACK
 	SAVE_C_REGS
 	SAVE_EXTRA_REGS
-	jmp	kgr_error_exit
+	jmp	kgr_error_exit  /* TODO: what about SWAPGS, i.e. %ebx? */
 END(kgr_xen_failsafe_callback)
 
 apicinterrupt3 HYPERVISOR_CALLBACK_VECTOR \
@@ -1135,6 +1152,10 @@ ENTRY(kgr_error_entry)
 	 */
 	TRACE_IRQS_OFF
 	CALL_enter_from_user_mode
+
+	/* Patched */
+	KGR_ENTRY_ENTER 8
+
 	ret
 
 .Lerror_entry_done:
@@ -1165,8 +1186,14 @@ ENTRY(kgr_error_entry)
 	 * hack: gs_change can fail with user gsbase.  If this happens, fix up
 	 * gsbase and proceed.  We'll fix up the exception and land in
 	 * gs_change's error handler with kernel gsbase.
-	 */
-	jmp	.Lerror_entry_from_usermode_swapgs
+	*/
+	/* Patched: replace jmp by inline code w/o KGR_ENTRY_ENTER */
+	/* jmp	.Lerror_entry_from_usermode_swapgs */
+	SWAPGS
+	TRACE_IRQS_OFF
+	CALL_enter_from_user_mode
+	ret
+
 
 .Lbstep_iret:
 	/* Fix truncated RIP */

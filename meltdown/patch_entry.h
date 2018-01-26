@@ -1,7 +1,34 @@
 #ifndef _PATCH_ENTRY_H
 #define _PATCH_ENTRY_H
 
+/*
+ * Bits 5, 9, 10, 13, 14, 15, 23, 31 of struct thread_info's ->flags
+ * are unused and set to zero on an unpatched kernel. Abuse them for a
+ * "refcnt magic": iff one of those flags is set, the task holds a
+ * reference count on the entry code. This livepatch uses bit 5 only,
+ * future livepatches stacked on top can use the other bits for their
+ * own reference count instances, thus allowing for up to 256 different
+ * livepatch releases.
+ */
+#define KGR__TIF_OWNS_ENTRY_REFCNT_MASK	\
+	((_AC(1, u) << 5) |			\
+	 (_AC(1, u) << 9) |			\
+	 (_AC(1, u) << 10) |			\
+	 (_AC(1, u) << 13) |			\
+	 (_AC(1, u) << 14) |			\
+	 (_AC(1, u) << 15) |			\
+	 (_AC(1, u) << 23) |			\
+	 (_AC(1, u) << 31))
+
+#define KGR_TIF_OWNS_ENTRY_REFCNT 5
+#define KGR__TIF_OWNS_ENTRY_REFCNT		\
+	(_AC(1, u) << KGR_TIF_OWNS_ENTRY_REFCNT)
+
 #ifdef __ASSEMBLY__
+
+#define KGR__TIF_ALLWORK_MASK					\
+	(_TIF_ALLWORK_MASK & ~KGR__TIF_OWNS_ENTRY_REFCNT_MASK)
+
 
 .macro KGR_CALL_RELOCS_BEGIN
 .pushsection .init.rodata, 524950
@@ -128,8 +155,26 @@ KGR_CPU_VAR_RELOC \var \offset
 KGR_CPU_VAR_RELOC \var \offset
 .endm
 
+.macro KGR_CPU_VAR_INC64 var offset=0
+.byte 0x65 /* GS segment prefix */
+.byte 0x48 /* 64 bit operand size REX prefix */
+.byte 0xff /* opcode */
+.byte 0x04 /* Mod/RM: SIB byte follows, opcode = 0 */
+.byte 0x25 /* SIB, use absolute offset ("disp32") */
+KGR_CPU_VAR_RELOC \var \offset
+.endm
+
 .macro KGR_CPU_VAR_DEC32 var offset=0
 .byte 0x65 /* GS segment prefix */
+.byte 0xff /* opcode */
+.byte 0x0c /* Mod/RM: SIB byte follows, opcode = 1 */
+.byte 0x25 /* SIB, use absolute offset ("disp32") */
+KGR_CPU_VAR_RELOC \var \offset
+.endm
+
+.macro KGR_CPU_VAR_DEC64 var offset=0
+.byte 0x65 /* GS segment prefix */
+.byte 0x48 /* 64 bit operand size REX prefix */
 .byte 0xff /* opcode */
 .byte 0x0c /* Mod/RM: SIB byte follows, opcode = 1 */
 .byte 0x25 /* SIB, use absolute offset ("disp32") */
@@ -185,15 +230,33 @@ KGR_CPU_VAR_RELOC \var \offset
 .int \imm32
 .endm
 
+
+.macro KGR_ENTRY_ENTER offset=0
+	lock orl $KGR__TIF_OWNS_ENTRY_REFCNT, ASM_THREAD_INFO(TI_flags, %rsp, SIZEOF_PTREGS + \offset)
+	KGR_CPU_VAR_INC64 entry_refcnt
+.endm
+
+.macro KGR_ENTRY_LEAVE offset=0
+	lock andl $~KGR__TIF_OWNS_ENTRY_REFCNT, ASM_THREAD_INFO(TI_flags, %rsp, SIZEOF_PTREGS + \offset)
+	KGR_CPU_VAR_DEC64 entry_refcnt
+.endm
+
 #else /* !__ASSEMBLY__ */
 
 #include <linux/init.h>
+#include <linux/percpu.h>
 
 int __init patch_entry_init(void);
-void patch_entry_apply(void);
-void patch_entry_unapply(void);
+void patch_entry_cleanup(void);
+
+void patch_entry_apply_start(void);
+void patch_entry_unapply_start(void);
 void patch_entry_apply_finish_cpu(void);
 void patch_entry_unapply_finish_cpu(void);
+
+void patch_entry_drain_start(void);
+
+DECLARE_PER_CPU(long, __entry_refcnt);
 
 #endif /* __ASSEMBLY__ */
 

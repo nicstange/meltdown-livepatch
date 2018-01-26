@@ -4,6 +4,7 @@
 #include <asm/uaccess.h>
 #include "schedule_tail_kallsyms.h"
 #include "patch_state.h"
+#include "patch_entry.h"
 
 struct rq* (*kgr_finish_task_switch)(struct task_struct *prev);
 void (*kgr__balance_callback)(struct rq *rq);
@@ -317,18 +318,39 @@ static inline void kgr_balance_callback(struct rq *rq)
 
 extern char kgr_schedule_tail_ret[];
 
-/* Patched to always return to kgr_schedule_tail_ret */
+/* Patched to return to kgr_schedule_tail_ret */
 void kgr_schedule_tail(struct task_struct *prev)
 {
 	struct rq *rq;
 
 	/*
 	 * Fix CVE-2017-5754
-	 *  +4 lines
-	 * Always return to the kgr_schedule_tail_ret label within
+	 *  +24 lines
+	 * Return to the kgr_schedule_tail_ret label within
 	 * the KGraft-unpatchable kgr_ret_from_fork()
 	 */
+	__u32 tif_owns_entry_refcnt = (task_thread_info(current)->flags &
+				       KGR__TIF_OWNS_ENTRY_REFCNT_MASK);
+	if (tif_owns_entry_refcnt) {
+		/*
+		 * This should never, ever happen,
+		 * c.f. process_fork_tracer().
+		 */
+		pr_err("unexpected entry refcnt ownership state:"
+		       " %pT, 0x%08x\n", current, tif_owns_entry_refcnt);
+	}
 	if (likely(kgr_meltdown_active)) {
+		if (likely(user_mode(task_pt_regs(current)))) {
+			/*
+			 * The return to userspace path will decrement
+			 * the entry code reference count but because
+			 * this task is a new fork, it doesn't own
+			 * such a reference yet.
+			 */
+			pr_debug("schedule_tail: increment\n");
+			set_tsk_thread_flag(current, KGR_TIF_OWNS_ENTRY_REFCNT);
+			this_cpu_inc(__entry_refcnt);
+		}
 		*(void **)(__builtin_frame_address(0) + 8)
 			=  &kgr_schedule_tail_ret[0];
 	}

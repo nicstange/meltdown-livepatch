@@ -10,8 +10,8 @@
 #include <linux/linkage.h>
 #include <linux/err.h>
 
-#include "patch_entry.h"
 #include "calling.h"
+#include "patch_entry.h"
 
 #if !IS_ENABLED(CONFIG_X86_64)
 #error "Livepatch supports only CONFIG_X86_64=y"
@@ -92,6 +92,9 @@ ENTRY(kgr_entry_SYSENTER_compat)
 	pushq   %r8                     /* pt_regs->r14 = 0 */
 	pushq   %r8                     /* pt_regs->r15 = 0 */
 	cld
+
+	/* Patched */
+	KGR_ENTRY_ENTER
 
 	/*
 	 * Sysenter doesn't filter flags, so we need to clear NT
@@ -192,6 +195,9 @@ ENTRY(kgr_entry_SYSCALL_compat)
 	pushq   %r8                     /* pt_regs->r14 = 0 */
 	pushq   %r8                     /* pt_regs->r15 = 0 */
 
+	/* Patched */
+	KGR_ENTRY_ENTER
+
 	/*
 	 * User mode is traced as though IRQs are on, and SYSENTER
 	 * turned them off.
@@ -207,6 +213,9 @@ ENTRY(kgr_entry_SYSCALL_compat)
 
 	/* Opportunistic SYSRET */
 sysret32_from_system_call:
+	/* Patched */
+	KGR_ENTRY_LEAVE
+
 	TRACE_IRQS_ON			/* User mode traces as IRQs on. */
 	movq	RBX(%rsp), %rbx		/* pt_regs->rbx */
 	movq	RBP(%rsp), %rbp		/* pt_regs->rbp */
@@ -299,6 +308,9 @@ ENTRY(kgr_entry_INT80_compat)
 	pushq   %r15                    /* pt_regs->r15 */
 	cld
 
+	/* Patched */
+	KGR_ENTRY_ENTER
+
 	/*
 	 * User mode is traced as though IRQs are on, and the interrupt
 	 * gate turned them off.
@@ -309,6 +321,8 @@ ENTRY(kgr_entry_INT80_compat)
 	/* Patched: call	do_syscall_32_irqs_off */
 	KGR_CALL_PATCH kgr_do_syscall_32_irqs_off
 .Lsyscall_32_done:
+	/* Patched */
+	KGR_ENTRY_LEAVE
 
 	/* Go back to user mode. */
 	TRACE_IRQS_ON
