@@ -437,6 +437,10 @@ static void __init kgr_trap_init(void)
 {
 	int i;
 
+
+	/* c.f. early_trap_pf_init() */
+	kgr_set_intr_gate(X86_TRAP_PF, page_fault);
+
 	/* c.f. trap_init() */
 	kgr_set_intr_gate(X86_TRAP_DE, divide_error);
 	kgr_set_intr_gate_ist(X86_TRAP_NMI, &kgr_nmi, NMI_STACK);
