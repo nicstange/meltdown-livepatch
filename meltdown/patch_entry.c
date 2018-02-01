@@ -789,16 +789,22 @@ static inline void kgr_signal_wake_up(struct task_struct *t, bool resume)
 }
 
 extern rwlock_t *kgr_tasklist_lock;
-
+extern bool *kgr_kgr_in_progress;
 
 static void kick_all_owners(void)
 {
 	struct task_struct *p, *t;
 
+	if (*kgr_kgr_in_progress) {
+		/* KGraft is still sending some fake signals. */
+		return;
+	}
+
 	read_lock(kgr_tasklist_lock);
 	for_each_process_thread(p, t) {
 		if (!(t->flags & PF_KTHREAD) &&
-		     (task_thread_info(t)->flags & KGR__TIF_OWNS_ENTRY_REFCNT_MASK)) {
+		    ((task_thread_info(t)->flags & KGR__TIF_OWNS_ENTRY_REFCNT_MASK) ==
+		     KGR__TIF_OWNS_ENTRY_REFCNT)) {
 			spin_lock_irq(&t->sighand->siglock);
 			kgr_signal_wake_up(t, 0);
 			spin_unlock_irq(&t->sighand->siglock);
@@ -812,26 +818,26 @@ static DECLARE_DELAYED_WORK(drain_work, drain_work_fn);
 
 void drain_work_fn(struct work_struct *work)
 {
+	static bool printed = false;
 	if (any_in_entry()) {
+		if (!printed) {
+			pr_info("still some user tasks in to be unmapped entry code,"
+				" will recheck every 2 seconds.\n");
+			printed = true;
+		}
+
 		kick_all_owners();
-		queue_delayed_work(system_power_efficient_wq, &drain_work, 10);
+		queue_delayed_work(system_power_efficient_wq, &drain_work, 2 * HZ);
 		return;
 	}
 
+	pr_info("entry code draining succeeded");
 	module_put(THIS_MODULE);
 }
 
 void patch_entry_drain_start(void)
 {
-	if (!any_in_entry()) {
-		module_put(THIS_MODULE);
-		return;
-	}
-
-	pr_info("still some user tasks in to be unmapped entry code,"
-			" will recheck every 10 jiffies.\n");
-	kick_all_owners();
-	queue_delayed_work(system_power_efficient_wq, &drain_work, 10);
+	drain_work_fn(NULL);
 }
 
 
