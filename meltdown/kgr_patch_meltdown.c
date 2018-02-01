@@ -68,6 +68,9 @@ void kgr_pre_revert_callback(void)
 	kgr_schedule_on_each_cpu(__uninstall_idt_table_repl);
 }
 
+void kgr_pre_replace_callback(void)
+{}
+
 int __init kgr_patch_meltdown_init(void)
 {
 	int ret = kgr_patch_meltdown_kallsyms();

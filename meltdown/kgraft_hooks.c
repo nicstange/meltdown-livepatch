@@ -416,10 +416,12 @@ int kgr_kgr_modify_kernel(struct kgr_patch *patch, bool revert)
 
 	/*
 	 * Fix CVE-2017-5754
-	 *  call pre revert handler
-	 *  +2 lines
+	 *  call pre revert/replace handlers
+	 *  +4 lines
 	 */
-	if (revert)
+	if (!revert)
+		kgr_pre_replace_callback();
+	else
 		kgr_pre_revert_callback();
 
 	kgr_kgr_handle_irqs();
