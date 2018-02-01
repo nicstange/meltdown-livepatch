@@ -23,8 +23,6 @@ static struct {
 	SCHEDULE_TAIL_KALLSYMS
 };
 
-
-
 static int __init kgr_patch_meltdown_kallsyms(void)
 {
 	unsigned long addr;
@@ -64,7 +62,7 @@ void kgr_pre_revert_callback(void)
 {
 	pr_info("kgr_pre_revert_callback\n");
 	kgr_meltdown_active = 0;
-	patch_entry_unapply();
+	patch_entry_unapply_start();
 	kgr_schedule_on_each_cpu(__uninstall_idt_table_repl);
 }
 
@@ -81,7 +79,7 @@ int __init kgr_patch_meltdown_init(void)
 	if (ret)
 		return ret;
 
-	patch_entry_apply();
+	patch_entry_apply_start();
 
 	/* Load the new idt on all cpus. */
 	on_each_cpu(__install_idt_table_repl, NULL, true);
