@@ -420,7 +420,7 @@ int kgr_kgr_modify_kernel(struct kgr_patch *patch, bool revert)
 	 *  +4 lines
 	 */
 	if (!revert)
-		kgr_pre_replace_callback();
+		kgr_pre_replace_callback(patch->owner);
 	else
 		kgr_pre_revert_callback();
 

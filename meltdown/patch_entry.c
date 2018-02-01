@@ -439,7 +439,6 @@ static void __init kgr_trap_init(void)
 {
 	int i;
 
-
 	/* c.f. early_trap_pf_init() */
 	kgr_set_intr_gate(X86_TRAP_PF, page_fault);
 
@@ -634,10 +633,6 @@ static int __init idt_tables_init(void)
 	return kgr_intr_init();
 }
 
-static unsigned long orig_idt;
-static unsigned long orig_debug_idt;
-static unsigned long orig_trace_idt;
-
 struct desc_ptr *kgr_idt_descr;
 struct desc_ptr *kgr_debug_idt_descr;
 struct desc_ptr *kgr_trace_idt_descr;
@@ -685,26 +680,38 @@ static inline void kgr_load_current_idt(void)
 }
 
 
-void patch_entry_apply_start(void)
+void patch_entry_apply_start(struct saved_idt *orig_idt)
 {
+	unsigned long idt;
+	unsigned long debug_idt;
+	unsigned long trace_idt;
+
 	try_module_get(THIS_MODULE);
 
-	orig_idt = (unsigned long)&kgr_idt_table[0];
-	orig_debug_idt = (unsigned long)&kgr_debug_idt_table[0];
-	orig_trace_idt = (unsigned long)&kgr_trace_idt_table[0];
+	idt = (unsigned long)&kgr_idt_table[0];
+	debug_idt = (unsigned long)&kgr_debug_idt_table[0];
+	trace_idt = (unsigned long)&kgr_trace_idt_table[0];
 
-	orig_idt = xchg(&kgr_idt_descr->address, orig_idt);
-	orig_debug_idt = xchg(&kgr_debug_idt_descr->address, orig_debug_idt);
-	orig_trace_idt = xchg(&kgr_trace_idt_descr->address, orig_trace_idt);
+	idt = xchg(&kgr_idt_descr->address, idt);
+	debug_idt = xchg(&kgr_debug_idt_descr->address, debug_idt);
+	trace_idt = xchg(&kgr_trace_idt_descr->address, trace_idt);
+
+	if (orig_idt) {
+		orig_idt->idt = idt;
+		orig_idt->debug_idt = debug_idt;
+		orig_idt->trace_idt = trace_idt;
+	}
 }
 
-void patch_entry_unapply_start(void)
+bool patch_entry_draining = false;
+
+void patch_entry_unapply_start(struct saved_idt const *orig_idt)
 {
-	xchg(&kgr_idt_descr->address, orig_idt);
-	xchg(&kgr_debug_idt_descr->address, orig_debug_idt);
-	xchg(&kgr_trace_idt_descr->address, orig_trace_idt);
+	patch_entry_draining = true;
+	xchg(&kgr_idt_descr->address, orig_idt->idt);
+	xchg(&kgr_debug_idt_descr->address, orig_idt->debug_idt);
+	xchg(&kgr_trace_idt_descr->address, orig_idt->trace_idt);
 }
-
 
 void kgr_entry_SYSCALL_64(void);
 void kgr_entry_SYSCALL_compat(void);

@@ -249,12 +249,21 @@ KGR_CPU_VAR_RELOC \var \offset
 int __init patch_entry_init(void);
 void patch_entry_cleanup(void);
 
-void patch_entry_apply_start(void);
-void patch_entry_unapply_start(void);
+struct saved_idt
+{
+	unsigned long idt;
+	unsigned long debug_idt;
+	unsigned long trace_idt;
+};
+
+void patch_entry_apply_start(struct saved_idt *orig_idt);
+void patch_entry_unapply_start(struct saved_idt const *orig_idt);
 void patch_entry_apply_finish_cpu(void);
 void patch_entry_unapply_finish_cpu(void);
 
 void patch_entry_drain_start(void);
+
+extern bool patch_entry_draining;
 
 DECLARE_PER_CPU(long, __entry_refcnt);
 
