@@ -339,8 +339,7 @@ void kgr_schedule_tail(struct task_struct *prev)
 		pr_err("unexpected entry refcnt ownership state:"
 		       " %pT, 0x%08x\n", current, tif_owns_entry_refcnt);
 	}
-	if (likely(kgr_meltdown_patch_state() == ps_active &&
-			!patch_entry_draining)) {
+	if (likely(kgr_meltdown_active() && !patch_entry_draining)) {
 		if (likely(user_mode(task_pt_regs(current)))) {
 			/*
 			 * The return to userspace path will decrement

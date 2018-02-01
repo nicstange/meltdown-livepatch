@@ -50,6 +50,11 @@ static inline enum patch_state kgr_meltdown_patch_state(void)
 	return kgr_meltdown_shared_data->ps;
 }
 
+static inline bool kgr_meltdown_active(void)
+{
+	return kgr_meltdown_shared_data->ps == ps_active;
+}
+
 static inline void __kgr_meltdown_set_patch_state(const enum patch_state ps)
 {
 	kgr_meltdown_shared_data->ps = ps;
@@ -97,6 +102,5 @@ out:
 	kgr_meltdown_shared_data_unlock();
 	return is_patcher;
 }
-
 
 #endif

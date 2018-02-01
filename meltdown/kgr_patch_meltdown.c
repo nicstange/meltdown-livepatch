@@ -11,8 +11,6 @@
 #include "schedule_tail_kallsyms.h"
 #include "patch_state.h"
 
-int kgr_meltdown_active;
-
 static struct {
 	char *name;
 	char **addr;
