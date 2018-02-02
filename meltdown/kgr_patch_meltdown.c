@@ -1,7 +1,9 @@
 #include <linux/kernel.h>
 #include <linux/kallsyms.h>
 #include <linux/smp.h>
-#include <linux/slab.h>
+#include <asm/hypervisor.h>
+#include <asm/cpufeature.h>
+#include <asm/processor.h>
 #include "kgraft_hooks_kallsyms.h"
 #include "kgraft_hooks.h"
 #include "entry_64_kallsyms.h"
@@ -9,7 +11,11 @@
 #include "patch_entry.h"
 #include "patch_entry_kallsyms.h"
 #include "schedule_tail_kallsyms.h"
-#include "patch_state.h"
+#include "context_switch_mm.h"
+#include "context_switch_mm_kallsyms.h"
+#include "shared_data.h"
+#include "shared_data_kallsyms.h"
+#include "kaiser.h"
 
 static struct {
 	char *name;
@@ -20,6 +26,8 @@ static struct {
 	ENTRY_64_COMPAT_KALLSYMS
 	PATCH_ENTRY_KALLSYMS
 	SCHEDULE_TAIL_KALLSYMS
+	CONTEXT_SWITCH_MM_KALLSYMS
+	SHARED_DATA_KALLSYMS
 };
 
 static int __init kgr_patch_meltdown_kallsyms(void)
@@ -119,59 +127,6 @@ void kgr_pre_replace_callback(struct module *new_mod)
 	}
 }
 
-struct meltdown_shared_data *kgr_meltdown_shared_data;
-
-static int __kgr_find_meltdown_shared_data(void *data, const char *name,
-						struct module *mod,
-						unsigned long addr)
-{
-	struct meltdown_shared_data **p;
-
-	if (!mod || mod == THIS_MODULE)
-		return 0;
-
-	if (strcmp(__stringify(kgr_meltdown_shared_data), name))
-		return 0;
-
-	p = (struct meltdown_shared_data **)data;
-
-	if (!(*p))
-		return 0;
-
-	if (!(*p)->refcnt)
-		return 0;
-
-	++(*p)->refcnt;
-	kgr_meltdown_shared_data = *p;
-	return 1;
-}
-
-static int kgr_meltdown_shared_data_init(void)
-{
-	int r = 0;
-
-	mutex_lock(&module_mutex);
-	if (kallsyms_on_each_symbol(__kgr_find_meltdown_shared_data,
-					NULL)) {
-		goto out;
-	}
-
-	kgr_meltdown_shared_data =
-		kzalloc(sizeof(*kgr_meltdown_shared_data), GFP_KERNEL);
-
-	if (!kgr_meltdown_shared_data) {
-		r = -ENOMEM;
-		goto out;
-	}
-
-	kgr_meltdown_shared_data->ps = ps_inactive;
-	spin_lock_init(&kgr_meltdown_shared_data->lock);
-	kgr_meltdown_shared_data->refcnt = 1;
-	INIT_LIST_HEAD(&kgr_meltdown_shared_data->patchers);
-out:
-	mutex_unlock(&module_mutex);
-	return r;
-}
 
 static struct meltdown_patcher this_meltdown_patcher = {
 	.mod = THIS_MODULE,
@@ -179,11 +134,18 @@ static struct meltdown_patcher this_meltdown_patcher = {
 
 int __init kgr_patch_meltdown_init(void)
 {
-	int ret = kgr_patch_meltdown_kallsyms();
-	if (ret)
-		return ret;
+	int ret;
+	bool enable = true;
 
-	ret = patch_entry_init();
+	if (x86_hyper == &x86_hyper_xen) {
+		enable = false;
+	} else if (!boot_cpu_has(X86_FEATURE_PCID)) {
+		enable = false;
+	} else if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD) {
+		enable = false;
+	}
+
+	ret = kgr_patch_meltdown_kallsyms();
 	if (ret)
 		return ret;
 
@@ -191,25 +153,43 @@ int __init kgr_patch_meltdown_init(void)
 	if (ret)
 		return ret;
 
-	kgr_meltdown_register_patcher(&this_meltdown_patcher);
+	ret = context_switch_mm_init();
+	if (ret) {
+		kgr_meltdown_shared_data_cleanup();
+		return ret;
+	}
+
+	ret = patch_entry_init();
+	if (ret) {
+		context_switch_mm_cleanup();
+		kgr_meltdown_shared_data_cleanup();
+		return ret;
+	}
+
+	ret = kgr_kaiser_init();
+	if (ret) {
+		patch_entry_cleanup();
+		context_switch_mm_cleanup();
+		kgr_meltdown_shared_data_cleanup();
+		return ret;
+	}
+
+	if (enable) {
+		kgr_meltdown_shared_data_lock();
+		if (kgr_meltdown_patch_state() == ps_inactive)
+			__kgr_meltdown_set_patch_state(ps_enabled);
+		__kgr_meltdown_register_patcher(&this_meltdown_patcher);
+		kgr_meltdown_shared_data_unlock();
+	}
 
 	return 0;
 }
 
 void kgr_patch_meltdown_cleanup(void)
 {
-	bool free_gd;
-	struct meltdown_shared_data *gd;
-
 	kgr_meltdown_unregister_patcher(&this_meltdown_patcher);
-
-	gd = kgr_meltdown_shared_data;
-	mutex_lock(&module_mutex);
-	free_gd = !--gd->refcnt;
-	kgr_meltdown_shared_data = NULL;
-	mutex_unlock(&module_mutex);
-
-	if (free_gd) {
-		kfree(gd);
-	}
+	kgr_kaiser_cleanup();
+	patch_entry_cleanup();
+	context_switch_mm_cleanup();
+	kgr_meltdown_shared_data_cleanup();
 }

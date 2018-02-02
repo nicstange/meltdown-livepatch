@@ -3,7 +3,7 @@
 #include <linux/irq_work.h>
 #include <asm/uaccess.h>
 #include "schedule_tail_kallsyms.h"
-#include "patch_state.h"
+#include "shared_data.h"
 #include "patch_entry.h"
 
 struct rq* (*kgr_finish_task_switch)(struct task_struct *prev);

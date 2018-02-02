@@ -1,9 +1,10 @@
-#ifndef _PATCH_STATE_H
-#define _PATCH_STATE_H
+#ifndef _SHARED_DATA_H
+#define _SHARED_DATA_H
 
 #include <linux/spinlock.h>
 #include <linux/list.h>
 #include <linux/module.h>
+#include <linux/percpu.h>
 #include "patch_entry.h"
 
 struct meltdown_patcher
@@ -24,6 +25,8 @@ struct meltdown_shared_data
 			    * meltdown is in progress. */
 	} ps;
 
+	struct kgr_pcpu_pgds __percpu *pcpu_pgds;
+
 	struct saved_idt orig_idt;
 
 	spinlock_t lock;
@@ -34,6 +37,8 @@ struct meltdown_shared_data
 
 extern struct meltdown_shared_data *kgr_meltdown_shared_data;
 
+int kgr_meltdown_shared_data_init(void);
+void kgr_meltdown_shared_data_cleanup(void);
 
 static inline void kgr_meltdown_shared_data_lock(void)
 {
@@ -72,11 +77,9 @@ static inline void kgr_meltdown_set_patch_state(const enum patch_state ps)
 	kgr_meltdown_shared_data_unlock();
 }
 
-static inline void kgr_meltdown_register_patcher(struct meltdown_patcher *p)
+static inline void __kgr_meltdown_register_patcher(struct meltdown_patcher *p)
 {
-	kgr_meltdown_shared_data_lock();
 	list_add_tail(&p->list, &kgr_meltdown_shared_data->patchers);
-	kgr_meltdown_shared_data_unlock();
 }
 
 static inline void kgr_meltdown_unregister_patcher(struct meltdown_patcher *p)
