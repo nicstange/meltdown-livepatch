@@ -8,6 +8,7 @@
 
 void __percpu * (*kgr__alloc_reserved_percpu)(size_t size, size_t align);
 struct meltdown_shared_data *kgr_meltdown_shared_data;
+bool kgr_meltdown_local_disabled = false;
 
 static int __kgr_find_meltdown_shared_data(void *data, const char *name,
 						struct module *mod,
@@ -62,7 +63,7 @@ int kgr_meltdown_shared_data_init(void)
 		return -ENOMEM;
 	}
 
-	kgr_meltdown_shared_data->ps = ps_inactive;
+	kgr_meltdown_shared_data->ps = ps_disabled;
 	spin_lock_init(&kgr_meltdown_shared_data->lock);
 	kgr_meltdown_shared_data->refcnt = 1;
 	INIT_LIST_HEAD(&kgr_meltdown_shared_data->patchers);

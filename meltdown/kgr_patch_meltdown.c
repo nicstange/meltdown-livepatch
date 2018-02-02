@@ -132,18 +132,20 @@ static struct meltdown_patcher this_meltdown_patcher = {
 	.mod = THIS_MODULE,
 };
 
+
 int __init kgr_patch_meltdown_init(void)
 {
 	int ret;
-	bool enable = true;
 
 	if (x86_hyper == &x86_hyper_xen) {
-		enable = false;
+		kgr_meltdown_local_disabled = true;
 	} else if (!boot_cpu_has(X86_FEATURE_PCID)) {
-		enable = false;
+		kgr_meltdown_local_disabled = true;
 	} else if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD) {
-		enable = false;
+		kgr_meltdown_local_disabled = true;
 	}
+	if (kgr_meltdown_local_disabled)
+		return 0;
 
 	ret = kgr_patch_meltdown_kallsyms();
 	if (ret)
@@ -174,19 +176,19 @@ int __init kgr_patch_meltdown_init(void)
 		return ret;
 	}
 
-	if (enable) {
-		kgr_meltdown_shared_data_lock();
-		if (kgr_meltdown_patch_state() == ps_inactive)
-			__kgr_meltdown_set_patch_state(ps_enabled);
-		__kgr_meltdown_register_patcher(&this_meltdown_patcher);
-		kgr_meltdown_shared_data_unlock();
-	}
+	kgr_meltdown_shared_data_lock();
+	if (kgr_meltdown_patch_state() == ps_disabled)
+		__kgr_meltdown_set_patch_state(ps_enabled);
+	__kgr_meltdown_register_patcher(&this_meltdown_patcher);
+	kgr_meltdown_shared_data_unlock();
 
 	return 0;
 }
 
 void kgr_patch_meltdown_cleanup(void)
 {
+	if (kgr_meltdown_local_disabled)
+		return;
 	kgr_meltdown_unregister_patcher(&this_meltdown_patcher);
 	kgr_kaiser_cleanup();
 	patch_entry_cleanup();

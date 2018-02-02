@@ -17,7 +17,7 @@ struct meltdown_patcher
 struct meltdown_shared_data
 {
 	enum patch_state {
-		ps_inactive = 0, /* Disabled */
+		ps_disabled = 0, /* Disabled */
 		ps_enabled, /* Intermediate state: not disabled but
 			     * also not active. */
 		ps_active, /* KGraft patch has been applied _globally_
@@ -37,6 +37,9 @@ struct meltdown_shared_data
 
 extern struct meltdown_shared_data *kgr_meltdown_shared_data;
 
+extern bool kgr_meltdown_local_disabled;
+
+
 int kgr_meltdown_shared_data_init(void);
 void kgr_meltdown_shared_data_cleanup(void);
 
@@ -52,12 +55,14 @@ static inline void kgr_meltdown_shared_data_unlock(void)
 
 static inline enum patch_state kgr_meltdown_patch_state(void)
 {
-	return kgr_meltdown_shared_data->ps;
+	return (!kgr_meltdown_local_disabled ?
+		kgr_meltdown_shared_data->ps : ps_disabled);
 }
 
 static inline bool kgr_meltdown_active(void)
 {
-	return kgr_meltdown_shared_data->ps == ps_active;
+	return (!kgr_meltdown_local_disabled &&
+		kgr_meltdown_shared_data->ps == ps_active);
 }
 
 static inline void __kgr_meltdown_set_patch_state(const enum patch_state ps)
