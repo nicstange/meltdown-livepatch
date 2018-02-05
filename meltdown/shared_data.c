@@ -42,9 +42,11 @@ int kgr_meltdown_shared_data_init(void)
 	mutex_lock(&module_mutex);
 	if (kallsyms_on_each_symbol(__kgr_find_meltdown_shared_data,
 					NULL)) {
+		pr_debug("Found other shared_data instance\n");
 		goto out;
 	}
 
+	pr_debug("Didn't find any other shared_data instance\n");
 	kgr_meltdown_shared_data =
 		kzalloc(sizeof(*kgr_meltdown_shared_data), GFP_KERNEL);
 
