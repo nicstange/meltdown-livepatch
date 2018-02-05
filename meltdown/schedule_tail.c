@@ -347,12 +347,12 @@ void kgr_schedule_tail(struct task_struct *prev)
 			 * this task is a new fork, it doesn't own
 			 * such a reference yet.
 			 */
-			pr_debug("schedule_tail: increment\n");
 			set_tsk_thread_flag(current, KGR_TIF_OWNS_ENTRY_REFCNT);
 			this_cpu_inc(__entry_refcnt);
+
+			*(void **)(__builtin_frame_address(0) + 8)
+				=  &kgr_schedule_tail_ret[0];
 		}
-		*(void **)(__builtin_frame_address(0) + 8)
-			=  &kgr_schedule_tail_ret[0];
 	}
 
 	/*

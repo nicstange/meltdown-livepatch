@@ -578,6 +578,11 @@ kgr_schedule_tail_ret:
 	jnz	kgr_int_ret_from_sys_call
 
 	/*
+	 * Never executed: kgr_schedule_tail() redirects for
+	 * userspace tasks only.
+	 */
+
+	/*
 	 * We came from kernel_thread
 	 * nb: we depend on RESTORE_EXTRA_REGS above
 	 */
