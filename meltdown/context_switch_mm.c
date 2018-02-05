@@ -1,5 +1,6 @@
 #include <asm/tlbflush.h>
 #include <linux/tracepoint.h>
+#include <asm/cpufeature.h>
 #include "shared_data.h"
 #include "kaiser.h"
 
@@ -30,15 +31,19 @@ static void sched_switch_tracer(void *data,
 	}
 
 	cpu_pgds = kgr_this_cpu_pgds();
-	cpu_pgds->user_pgd = __pa(user_pgd);
-	cpu_pgds->kern_pgd = __pa(next_mm->pgd);
+	prev_mm = prev->active_mm;
+	/* Be careful to retain an unset X86_CR3_PCID_NOFLUSH at the user_pgd. */
+	if (next_mm != prev_mm) {
+		cpu_pgds->user_pgd = __pa(user_pgd);
+		cpu_pgds->kern_pgd = __pa(next_mm->pgd);
+	}
 
-	if (unlikely(!this_cpu_has(X86_FEATURE_PCID)))
+	if (!likely(this_cpu_has(X86_FEATURE_PCID)))
 		return;
 
-	cpu_pgds->kern_pgd |= X86_CR3_PCID_USER_NOFLUSH;
+	cpu_pgds->user_pgd |= X86_CR3_PCID_ASID_USER;
+	cpu_pgds->kern_pgd |= X86_CR3_PCID_KERN_NOFLUSH;
 
-	prev_mm = prev->active_mm;
 	if (next_mm == prev_mm) {
 		/*
 		 * The write of TLBSTATE_OK will stabilize
@@ -53,13 +58,13 @@ static void sched_switch_tracer(void *data,
 		this_cpu_write(cpu_tlbstate.state, TLBSTATE_OK);
 		barrier();
 		cpu = smp_processor_id();
-		if (cpumask_test_cpu(cpu, mm_cpumask(next_mm))) {
+		if (!cpumask_test_cpu(cpu, mm_cpumask(next_mm))) {
 			/*
-			 * Hooray, we might have been in lazy TLB mode
-			 * but are able to rejoin, i.e. there haven't
-			 * been any TLB flush IPIs meanwhile.
+			 * Ugh, we have been in lazy TLB mode and
+			 * called leave_mm(), i.e. TLB flush IPIs have
+			 * arrived meanwhile.
 			 */
-			cpu_pgds->user_pgd |= X86_CR3_PCID_USER_NOFLUSH;
+			kaiser_flush_tlb_on_return_to_user();
 		}
 	}
 }
