@@ -137,6 +137,10 @@ int __init kgr_patch_meltdown_init(void)
 {
 	int ret;
 
+	ret = kgr_patch_meltdown_kallsyms();
+	if (ret)
+		return ret;
+
 	if (x86_hyper == &x86_hyper_xen) {
 		kgr_meltdown_local_disabled = true;
 	} else if (!boot_cpu_has(X86_FEATURE_PCID)) {
@@ -146,10 +150,6 @@ int __init kgr_patch_meltdown_init(void)
 	}
 	if (kgr_meltdown_local_disabled)
 		return 0;
-
-	ret = kgr_patch_meltdown_kallsyms();
-	if (ret)
-		return ret;
 
 	ret = kgr_meltdown_shared_data_init();
 	if (ret)
