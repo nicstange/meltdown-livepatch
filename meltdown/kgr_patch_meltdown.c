@@ -16,6 +16,7 @@
 #include "shared_data.h"
 #include "shared_data_kallsyms.h"
 #include "kaiser.h"
+#include "pcid.h"
 
 static struct {
 	char *name;
@@ -49,13 +50,15 @@ static int __init kgr_patch_meltdown_kallsyms(void)
 	return 0;
 }
 
-static void __install_idt_table_repl(void *info)
+static void __install_idt_table_repl(struct work_struct *w)
 {
 	patch_entry_apply_finish_cpu();
+	kgr_pcid_enable_cpu();
 }
 
 static void __uninstall_idt_table_repl(struct work_struct *w)
 {
+	kgr_pcid_disable_cpu();
 	patch_entry_unapply_finish_cpu();
 }
 
@@ -71,7 +74,7 @@ void kgr_post_patch_callback(void)
 				&kgr_meltdown_shared_data->orig_idt : NULL);
 
 	/* Load the new idt on all cpus. */
-	on_each_cpu(__install_idt_table_repl, NULL, true);
+	kgr_schedule_on_each_cpu(__install_idt_table_repl);
 
 	if (kgr_meltdown_shared_data->prev_patch_entry_drain_start) {
 		kgr_meltdown_shared_data->prev_patch_entry_drain_start();
