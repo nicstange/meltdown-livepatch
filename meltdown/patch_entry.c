@@ -759,6 +759,7 @@ static bool any_in_entry(void)
 	for_each_possible_cpu(cpu) {
 		refcnt_low_is_negative = refcnt_low < 0 ? 1 : 0;
 		refcnt_percpu = *per_cpu_ptr(entry_refcnt, cpu);
+		pr_debug("CPU %d entry refcnt: 0x%016lx\n", cpu, refcnt_percpu);
 		refcnt_low += refcnt_percpu;
 
 		/* Check for overflow */
@@ -773,7 +774,8 @@ static bool any_in_entry(void)
 
 	if (refcnt_high < 0 || (!refcnt_high && refcnt_high < 0)) {
 		/* Huh, overall refcount is < 0? How can that happen? */
-		pr_warn("entry code reference count is < 0");
+		pr_warn("entry code reference count is < 0: 0x%08x %016lx\n",
+			refcnt_high, refcnt_low);
 	}
 
 	return (refcnt_low || refcnt_high);
