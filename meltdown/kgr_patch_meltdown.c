@@ -141,12 +141,18 @@ int __init kgr_patch_meltdown_init(void)
 	if (ret)
 		return ret;
 
+	pr_debug("module core: 0x%016lx, %u\n",
+		(unsigned long)THIS_MODULE->module_core,
+		THIS_MODULE->core_size);
 	if (x86_hyper == &x86_hyper_xen) {
 		kgr_meltdown_local_disabled = true;
+		pr_info("Disabling Meltdown patch: XEN guest\n");
 	} else if (!boot_cpu_has(X86_FEATURE_PCID)) {
 		kgr_meltdown_local_disabled = true;
+		pr_warn("Disabling Meltdown patch: lack of PCID support\n");
 	} else if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD) {
 		kgr_meltdown_local_disabled = true;
+		pr_info("Disabling Meltdown patch: AMD CPU\n");
 	}
 	if (kgr_meltdown_local_disabled)
 		return 0;
