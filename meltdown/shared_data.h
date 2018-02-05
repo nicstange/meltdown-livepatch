@@ -50,7 +50,7 @@ static inline void kgr_meltdown_shared_data_lock(void)
 
 static inline void kgr_meltdown_shared_data_unlock(void)
 {
-	spin_lock(&kgr_meltdown_shared_data->lock);
+	spin_unlock(&kgr_meltdown_shared_data->lock);
 }
 
 static inline enum patch_state kgr_meltdown_patch_state(void)
