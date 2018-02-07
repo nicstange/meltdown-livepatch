@@ -41,14 +41,10 @@ static const struct kgr_cpu_var_reloc *kgr_cpu_var_relocs_begin __initconst=
 static const struct kgr_cpu_var_reloc *kgr_cpu_var_relocs_end __initconst=
 	&__kgr_cpu_var_relocs_end;
 
-
-extern char __kgr_entry_text_begin;
-extern char __kgr_entry_text_end;
-
 unsigned long kgr_entry_text_begin __initconst =
-	(unsigned long)&__kgr_entry_text_begin;
+	(unsigned long)__kgr_entry_text_begin;
 unsigned long kgr_entry_text_end __initconst =
-	(unsigned long)&__kgr_entry_text_end;
+	(unsigned long)__kgr_entry_text_end;
 
 int (*kgr_core_kernel_text)(unsigned long addr);
 int (*kgr_set_memory_rw)(unsigned long addr, int numpages);
@@ -198,9 +194,9 @@ static __init void syscalls_init(void)
 	kgr_replaced_sys_call_table[__NR_rt_sigreturn] = kgr_stub_rt_sigreturn;
 }
 
-static gate_desc kgr_idt_table[NR_VECTORS] __page_aligned_bss;
-static gate_desc kgr_debug_idt_table[NR_VECTORS] __page_aligned_bss;
-static gate_desc kgr_trace_idt_table[NR_VECTORS] __page_aligned_bss;
+gate_desc kgr_idt_table[NR_VECTORS] __page_aligned_bss;
+gate_desc kgr_debug_idt_table[NR_VECTORS] __page_aligned_bss;
+gate_desc kgr_trace_idt_table[NR_VECTORS] __page_aligned_bss;
 
 /* from arch/x86/include/asm/desc.h */
 static inline void kgr_set_nmi_gate(int gate, void *addr)

@@ -27,12 +27,17 @@ struct meltdown_shared_data
 
 	struct kgr_pcpu_pgds __percpu *pcpu_pgds;
 
+
 	struct saved_idt orig_idt;
 
 	spinlock_t lock;
+	pgd_t* shadow_pgd;
+
+
 	unsigned long refcnt; /* protected by module_mutex */
 	struct list_head patchers; /* see kgr_pre_replace_callback() */
 	void (*prev_patch_entry_drain_start)(void);
+	bool dirty;
 };
 
 extern struct meltdown_shared_data *kgr_meltdown_shared_data;
@@ -42,6 +47,7 @@ extern bool kgr_meltdown_local_disabled;
 
 int kgr_meltdown_shared_data_init(void);
 void kgr_meltdown_shared_data_cleanup(void);
+int kgr_meltdown_shared_data_reset(void);
 
 static inline void kgr_meltdown_shared_data_lock(void)
 {
@@ -110,5 +116,13 @@ out:
 	kgr_meltdown_shared_data_unlock();
 	return is_patcher;
 }
+
+static inline void kgr_meltdown_shared_data_mark_dirty(void)
+{
+	kgr_meltdown_shared_data->dirty = true;
+}
+
+int kgr_meltdown_shared_data_reset(void);
+
 
 #endif

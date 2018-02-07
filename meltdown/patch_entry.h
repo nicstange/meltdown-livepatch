@@ -245,6 +245,8 @@ KGR_CPU_VAR_RELOC \var \offset
 
 #include <linux/init.h>
 #include <linux/percpu.h>
+#include <asm/irq_vectors.h>
+#include <asm/desc_defs.h>
 
 int __init patch_entry_init(void);
 void patch_entry_cleanup(void);
@@ -264,6 +266,13 @@ void patch_entry_unapply_finish_cpu(void);
 void patch_entry_drain_start(void);
 
 extern bool patch_entry_draining;
+
+extern char __kgr_entry_text_begin[];
+extern char __kgr_entry_text_end[];
+
+extern gate_desc kgr_idt_table[NR_VECTORS];
+extern gate_desc kgr_debug_idt_table[NR_VECTORS];
+extern gate_desc kgr_trace_idt_table[NR_VECTORS];
 
 DECLARE_PER_CPU(long, __entry_refcnt);
 

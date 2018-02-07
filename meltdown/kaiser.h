@@ -10,6 +10,10 @@
 int kgr_kaiser_init(void);
 void kgr_kaiser_cleanup(void);
 
+pgd_t* kgr_kaiser_create_shadow_pgd(void);
+void kgr_kaiser_free_shadow_pgd(pgd_t *pgd);
+pgd_t* kgr_kaiser_reset_shadow_pgd(pgd_t *old_shadow_pgd);
+
 struct kgr_pcpu_pgds
 {
 	unsigned long kern_pgd;

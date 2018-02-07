@@ -16,6 +16,7 @@
 #include "shared_data.h"
 #include "shared_data_kallsyms.h"
 #include "kaiser.h"
+#include "kaiser_kallsyms.h"
 #include "pcid.h"
 
 static struct {
@@ -29,6 +30,7 @@ static struct {
 	SCHEDULE_TAIL_KALLSYMS
 	CONTEXT_SWITCH_MM_KALLSYMS
 	SHARED_DATA_KALLSYMS
+	KAISER_KALLSYMS
 };
 
 static int __init kgr_patch_meltdown_kallsyms(void)
@@ -77,8 +79,22 @@ void kgr_post_patch_callback(void)
 	kgr_schedule_on_each_cpu(__install_idt_table_repl);
 
 	if (kgr_meltdown_shared_data->prev_patch_entry_drain_start) {
+		/* Clean handover */
 		kgr_meltdown_shared_data->prev_patch_entry_drain_start();
 		kgr_meltdown_shared_data->prev_patch_entry_drain_start = NULL;
+	} else if (kgr_meltdown_shared_data->dirty) {
+		/*
+		 * Unclean handover: there has been a revert inbetween
+		 * us and out predecessor.
+		 */
+		if (kgr_meltdown_shared_data_reset()) {
+			/*
+			 * In theory, this can't happen,
+			 * c.f. kgr_kaiser_reset_shadow_pgd()).
+			 */
+			pr_err("failed to reset shared data, Meltdown unfixed\n");
+			return;
+		}
 	}
 
 	kgr_meltdown_set_patch_state(ps_active);
@@ -91,6 +107,7 @@ void kgr_pre_revert_callback(void)
 	if (!kgr_meltdown_patch_state())
 		return;
 
+	kgr_meltdown_shared_data_mark_dirty();
 	kgr_meltdown_set_patch_state(ps_enabled);
 	patch_entry_unapply_start(&kgr_meltdown_shared_data->orig_idt);
 	kgr_schedule_on_each_cpu(__uninstall_idt_table_repl);
@@ -199,7 +216,6 @@ void kgr_patch_meltdown_cleanup(void)
 	if (kgr_meltdown_local_disabled)
 		return;
 	kgr_meltdown_unregister_patcher(&this_meltdown_patcher);
-	kgr_kaiser_cleanup();
 	patch_entry_cleanup();
 	context_switch_mm_cleanup();
 	kgr_meltdown_shared_data_cleanup();
