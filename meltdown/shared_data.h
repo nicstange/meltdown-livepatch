@@ -5,6 +5,8 @@
 #include <linux/list.h>
 #include <linux/module.h>
 #include <linux/percpu.h>
+#include <linux/compiler.h>
+#include <asm/barrier.h>
 #include "patch_entry.h"
 
 struct meltdown_patcher
@@ -61,19 +63,24 @@ static inline void kgr_meltdown_shared_data_unlock(void)
 
 static inline enum patch_state kgr_meltdown_patch_state(void)
 {
-	return (!kgr_meltdown_local_disabled ?
-		kgr_meltdown_shared_data->ps : ps_disabled);
+	enum patch_state ps = (!kgr_meltdown_local_disabled ?
+			       READ_ONCE(kgr_meltdown_shared_data->ps) :
+			       ps_disabled);
+	/* paired with smp_wmb() in __kgr_meltdown_set_patch_state() */
+	smp_rmb();
+	return ps;
 }
 
 static inline bool kgr_meltdown_active(void)
 {
-	return (!kgr_meltdown_local_disabled &&
-		kgr_meltdown_shared_data->ps == ps_active);
+	return kgr_meltdown_patch_state() == ps_active;
 }
 
 static inline void __kgr_meltdown_set_patch_state(const enum patch_state ps)
 {
-	kgr_meltdown_shared_data->ps = ps;
+	/* paired with smp_rmb() in kgr_meltdown_patch_state() */
+	smp_wmb();
+	WRITE_ONCE(kgr_meltdown_shared_data->ps, ps);
 }
 
 static inline void kgr_meltdown_set_patch_state(const enum patch_state ps)
