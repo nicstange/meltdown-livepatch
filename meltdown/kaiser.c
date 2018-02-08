@@ -455,6 +455,68 @@ void kgr_kaiser_remove_mapping(unsigned long start, unsigned long size)
 	}
 }
 
+/*
+ * Page table pages are page-aligned.  The lower half of the top
+ * level is used for userspace and the top half for the kernel.
+ * This returns true for user pages that need to get copied into
+ * both the user and kernel copies of the page tables, and false
+ * for kernel pages that should only be in the kernel copy.
+ */
+static inline bool is_userspace_pgd(pgd_t *pgdp)
+{
+	return ((unsigned long)pgdp % PAGE_SIZE) < (PAGE_SIZE / 2);
+}
+
+static pgd_t kgr_kaiser_set_shadow_pgd(pgd_t *pgdp, pgd_t pgd)
+{
+	pgd_t *user_pgdp;
+
+	if (!kgr_meltdown_active())
+		return pgd;
+
+	user_pgdp = kgr_user_pgd(pgdp);
+	if (!user_pgdp)
+		return pgd;
+
+	/*
+	 * Do we need to also populate the shadow pgd?  Check _PAGE_USER to
+	 * skip cases like kexec and EFI which make temporary low mappings.
+	 */
+	if (pgd.pgd & _PAGE_USER) {
+		if (is_userspace_pgd(pgdp)) {
+			user_pgdp->pgd = pgd.pgd;
+
+			/*
+			 * Note: upstream kaiser sets _PAGE_NX on the
+			 * kernel's pgd instance. For livepatch
+			 * revertability, we must not do that.
+			 */
+			/*
+			 * Even if the entry is *mapping* userspace, ensure
+			 * that userspace can not use it.  This way, if we
+			 * get out to userspace running on the kernel CR3,
+			 * userspace will crash instead of running.
+			 */
+			/* if (__supported_pte_mask & _PAGE_NX) */
+			/*	pgd.pgd |= _PAGE_NX; */
+		}
+	} else if (!pgd.pgd) {
+		/*
+		 * pgd_clear() cannot check _PAGE_USER, and is even used to
+		 * clear corrupted pgd entries: so just rely on cases like
+		 * kexec and EFI never to be using pgd_clear().
+		 */
+		if (is_userspace_pgd(pgdp))
+			user_pgdp->pgd = pgd.pgd;
+	}
+	return pgd;
+}
+
+void kgr_native_set_pgd(pgd_t *pgdp, pgd_t pgd)
+{
+	*pgdp = kgr_kaiser_set_shadow_pgd(pgdp, pgd);
+}
+
 
 int __init kgr_kaiser_init(void)
 {

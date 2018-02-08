@@ -2,6 +2,7 @@
 #define _KGR_PATCH_MELTDOWN_H
 
 #include "tlb.h"
+#include "kaiser.h"
 
 struct work_struct;
 
@@ -22,5 +23,6 @@ void kgr_schedule_tail(struct task_struct *prev);
 		  kgr_native_flush_tlb_global),		\
 	KGR_PATCH(native_flush_tlb_single,			\
 		  kgr_native_flush_tlb_single),		\
+	KGR_PATCH(native_set_pgd, kgr_native_set_pgd),		\
 
 #endif
