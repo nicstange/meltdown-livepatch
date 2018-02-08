@@ -53,4 +53,9 @@ static inline void kaiser_flush_tlb_on_return_to_user(void)
 	kgr_this_cpu_pgds()->user_pgd &= ~X86_CR3_PCID_NOFLUSH;
 }
 
+
+int kgr_kaiser_add_mapping(unsigned long addr, unsigned long size,
+			   unsigned long flags);
+void kgr_kaiser_remove_mapping(unsigned long start, unsigned long size);
+
 #endif

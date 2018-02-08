@@ -8,6 +8,7 @@
 #include "kaiser.h"
 #include "shared_data.h"
 #include "patch_entry.h"
+#include "pageattr.h"
 
 struct kgr_pcpu_pgds __percpu *__kgr_pcpu_pgds;
 /*
@@ -427,6 +428,33 @@ pgd_t* kgr_kaiser_reset_shadow_pgd(pgd_t *old_shadow_pgd)
 
 	return new_shadow_pgd;
 }
+
+int kgr_kaiser_add_mapping(unsigned long addr, unsigned long size,
+			   unsigned long flags)
+{
+	if (!kgr_meltdown_active())
+		return 0;
+
+	return kgr_kaiser_add_user_map(kgr_meltdown_shared_data->shadow_pgd,
+				       (const void *)addr, size, flags, NULL);
+}
+
+void kgr_kaiser_remove_mapping(unsigned long start, unsigned long size)
+{
+	unsigned long end = start + size;
+	unsigned long addr, next;
+	pgd_t *pgd;
+
+	if (!kgr_meltdown_active())
+		return;
+
+	pgd = kgr_meltdown_shared_data->shadow_pgd + pgd_index(start);
+	for (addr = start; addr < end; pgd++, addr = next) {
+		next = pgd_addr_end(addr, end);
+		kgr_unmap_pud_range_nofree(pgd, addr, next);
+	}
+}
+
 
 int __init kgr_kaiser_init(void)
 {
