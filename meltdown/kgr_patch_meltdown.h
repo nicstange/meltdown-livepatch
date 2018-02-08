@@ -4,6 +4,7 @@
 #include "tlb.h"
 #include "kaiser.h"
 #include "fork.h"
+#include "ldt.h"
 
 struct work_struct;
 
@@ -27,5 +28,9 @@ void kgr_schedule_tail(struct task_struct *prev);
 	KGR_PATCH(native_set_pgd, kgr_native_set_pgd),		\
 	KGR_PATCH(free_task, kgr_free_task),			\
 	KGR_PATCH(copy_process, kgr_copy_process),		\
+	KGR_PATCH(alloc_ldt_struct, kgr_alloc_ldt_struct),	\
+	KGR_PATCH(destroy_context_ldt,				\
+			kgr_destroy_context_ldt),		\
+	KGR_PATCH(write_ldt, kgr_write_ldt),			\
 
 #endif
