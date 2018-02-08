@@ -18,6 +18,7 @@
 #include "kaiser.h"
 #include "kaiser_kallsyms.h"
 #include "pcid.h"
+#include "fork_kallsyms.h"
 
 static struct {
 	char *name;
@@ -31,6 +32,7 @@ static struct {
 	CONTEXT_SWITCH_MM_KALLSYMS
 	SHARED_DATA_KALLSYMS
 	KAISER_KALLSYMS
+	FORK_KALLSYMS
 };
 
 static int __init kgr_patch_meltdown_kallsyms(void)

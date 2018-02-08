@@ -81,4 +81,23 @@ void kgr_kaiser_remove_mapping(unsigned long start, unsigned long size);
 void kgr_native_set_pgd(pgd_t *pgdp, pgd_t pgd);
 
 
+static inline int kgr_kaiser_map_thread_stack(void *stack)
+{
+	/*
+	 * Map that page of kernel stack on which we enter from user context.
+	 */
+	return kgr_kaiser_add_mapping((unsigned long)stack +
+			THREAD_SIZE - PAGE_SIZE, PAGE_SIZE, __PAGE_KERNEL);
+}
+
+static inline void kgr_kaiser_unmap_thread_stack(void *stack)
+{
+	/*
+	 * Note: may be called even when kaiser_map_thread_stack() failed.
+	 */
+	kgr_kaiser_remove_mapping((unsigned long)stack +
+				  THREAD_SIZE - PAGE_SIZE, PAGE_SIZE);
+}
+
+
 #endif
