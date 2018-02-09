@@ -5,6 +5,7 @@
 #include "kaiser.h"
 #include "fork.h"
 #include "ldt.h"
+#include "perf_event_intel_ds.h"
 
 struct work_struct;
 
@@ -32,5 +33,9 @@ void kgr_schedule_tail(struct task_struct *prev);
 	KGR_PATCH(destroy_context_ldt,				\
 			kgr_destroy_context_ldt),		\
 	KGR_PATCH(write_ldt, kgr_write_ldt),			\
+	KGR_PATCH(release_pebs_buffer,				\
+			kgr_release_pebs_buffer),		\
+	KGR_PATCH(release_bts_buffer, kgr_release_bts_buffer),	\
+	KGR_PATCH(reserve_ds_buffers, kgr_reserve_ds_buffers),	\
 
 #endif

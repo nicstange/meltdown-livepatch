@@ -20,6 +20,7 @@
 #include "pcid.h"
 #include "fork_kallsyms.h"
 #include "ldt_kallsyms.h"
+#include "perf_event_intel_ds_kallsyms.h"
 
 static struct {
 	char *name;
