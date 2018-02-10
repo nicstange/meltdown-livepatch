@@ -5,10 +5,15 @@
 #include <asm/desc.h>
 #include <linux/list.h>
 #include <asm/page.h>
+#include <linux/rcupdate.h>
+#include <linux/atomic.h>
+#include <linux/bitmap.h>
+#include <linux/bit_spinlock.h>
+#include <linux/slab.h>
+#include <linux/err.h>
 #include "kaiser.h"
 #include "shared_data.h"
 #include "patch_entry.h"
-#include "pageattr.h"
 
 struct kgr_pcpu_pgds __percpu *__kgr_pcpu_pgds;
 /*
@@ -23,6 +28,258 @@ struct mm_struct *kgr_init_mm;
 
 /* from asm/pagetable.h */
 #define kgr_pgd_offset_k(address) pgd_offset(kgr_init_mm, (address))
+
+
+/*
+ * For livepatching, we have to deal with user mappings of kmalloc()ed
+ * regions, that is partial pages.
+ *
+ * Only LDTs and perf_event_intel_ds need this and thus, this case is
+ * uncommon and can be slow.
+ *
+ * An additional complication is that in the transition period, it's
+ * possible to receive a request for unmapping a region which has
+ * never been registered before and these must be ignored. It follows
+ * that a simple reference count per mapped page with partial
+ * allocations in it is not enough.
+ *
+ * Instead we have to keep track of a page's regions which have
+ * actually been requested to get user-mapped. This is done in units
+ * of eight bytes, because that's SLAB's minimum allocation size,
+ * c.f. struct page_alloc_tracking below.
+ *
+ * If any of a PTE page's entries requires allocation tracking, an
+ * additional page holding one pointer per entry will be allocated and
+ * made available through the PTE page's struct page ->index. The
+ * lowest bit of those pointers will be used as a bit_spinlock
+ * protecting both, the pointer value itself and the struct
+ * page_alloc_tracking they point to. The lower twelve bits of the PTE
+ * page's ->index serves as a reference count, i.e. it equals the
+ * number of PTE entries with an associated
+ * struct page_alloc_tracking.
+ */
+
+#define PAGE_ALLOC_TRACKING_BITS (PAGE_SIZE / 8)
+
+struct page_alloc_tracking
+{
+	unsigned long allocated[PAGE_ALLOC_TRACKING_BITS / BITS_PER_LONG];
+};
+
+
+#define PTE_PAGE_ALLOC_TRACKINGS_COUNT_MASK	\
+	(~PAGE_MASK)
+
+#define PTE_PAGE_ALLOC_TRACKINGS_PTR_MASK	\
+	~PTE_PAGE_ALLOC_TRACKINGS_COUNT_MASK
+
+#define PAGE_ALLOC_TRACKING_LOCK_BIT	0
+#define PAGE_ALLOC_TRACKING_PTR_MASK	~BIT(PAGE_ALLOC_TRACKING_LOCK_BIT)
+
+
+static unsigned long* read_alloc_tracks_ptr(struct page const *p)
+{
+	long p_index;
+
+	/* Mimic a rcu_dereference() */
+	p_index = atomic_long_read((atomic_long_t *)&p->index);
+	smp_read_barrier_depends();
+	return (unsigned long *)((unsigned long)p_index &
+				 PTE_PAGE_ALLOC_TRACKINGS_PTR_MASK);
+}
+
+static struct page_alloc_tracking* get_page_alloc_track_locked(pte_t const *pte,
+							       bool create)
+{
+	struct page *pte_page = virt_to_page(pte);
+	unsigned int pte_index;
+	unsigned long *trackings;
+	struct page_alloc_tracking *tracking;
+
+	pte_index = pte - (pte_t *)((unsigned long)pte & PAGE_MASK);
+
+	rcu_read_lock();
+	trackings = read_alloc_tracks_ptr(pte_page);
+	if (!trackings) {
+		rcu_read_unlock();
+		if (!create)
+			return NULL;
+		goto alloc_trackings;
+	}
+
+	bit_spin_lock(PAGE_ALLOC_TRACKING_LOCK_BIT, &trackings[pte_index]);
+	tracking = (struct page_alloc_tracking *)(trackings[pte_index] &
+						  PAGE_ALLOC_TRACKING_PTR_MASK);
+	if (!tracking) {
+		bit_spin_unlock(PAGE_ALLOC_TRACKING_LOCK_BIT,
+				&trackings[pte_index]);
+		rcu_read_unlock();
+
+		if (!create)
+			return NULL;
+
+		lock_page(pte_page);
+		trackings = read_alloc_tracks_ptr(pte_page);
+		if (!trackings) {
+			unlock_page(pte_page);
+			goto alloc_trackings;
+		}
+
+		goto alloc_tracking;
+	}
+
+	rcu_read_unlock();
+	return tracking;
+
+
+alloc_trackings:
+	trackings = (unsigned long *)get_zeroed_page(GFP_KERNEL);
+	if (!trackings)
+		return ERR_PTR(-ENOMEM);
+	lock_page(pte_page);
+	if (!pte_page->index) {
+		/* Should be rcu_assign_pointer() */
+		smp_store_release(&pte_page->index, (unsigned long)trackings);
+	} else {
+		free_page((unsigned long)trackings);
+		trackings = read_alloc_tracks_ptr(pte_page);
+	}
+
+alloc_tracking:
+	tracking = kzalloc(sizeof(*tracking), GFP_KERNEL);
+	if (!tracking) {
+		unlock_page(pte_page);
+		return ERR_PTR(-ENOMEM);
+	}
+
+	bit_spin_lock(PAGE_ALLOC_TRACKING_LOCK_BIT, &trackings[pte_index]);
+	if (trackings[pte_index] & PAGE_ALLOC_TRACKING_PTR_MASK) {
+		kfree(tracking);
+		tracking =
+		   (struct page_alloc_tracking *)(trackings[pte_index] &
+						  PAGE_ALLOC_TRACKING_PTR_MASK);
+		unlock_page(pte_page);
+		return tracking;
+	}
+
+	WRITE_ONCE(trackings[pte_index],
+		   (unsigned long)tracking | BIT(PAGE_ALLOC_TRACKING_LOCK_BIT));
+	atomic_long_inc((atomic_long_t *)&pte_page->index);
+
+	unlock_page(pte_page);
+	return tracking;
+}
+
+static void unlock_page_alloc_track(pte_t const *pte)
+{
+	struct page *pte_page = virt_to_page(pte);
+	unsigned int pte_index;
+	unsigned long *trackings;
+
+	/*
+	 * No need to RCU-protect here: we know that the trackings
+	 * pointer page can't go away.
+	 */
+	pte_index = pte - (pte_t *)((unsigned long)pte & PAGE_MASK);
+	trackings = read_alloc_tracks_ptr(pte_page);
+	bit_spin_unlock(PAGE_ALLOC_TRACKING_LOCK_BIT, &trackings[pte_index]);
+}
+
+static void __free_alloc_tracks_rcu(struct rcu_head *head)
+{
+	struct page *p = container_of(head, struct page, rcu_head);
+
+	free_page((unsigned long)pfn_to_kaddr(page_to_pfn(p)));
+}
+
+static void put_page_alloc_track(pte_t const *pte)
+{
+	struct page *pte_page = virt_to_page(pte);
+	unsigned int pte_index;
+	unsigned long *trackings;
+	struct page_alloc_tracking *tracking;
+	unsigned long trackings_count;
+
+	pte_index = pte - (pte_t *)((unsigned long)pte & PAGE_MASK);
+
+	rcu_read_lock();
+	trackings = read_alloc_tracks_ptr(pte_page);
+	WARN_ON(!bit_spin_is_locked(PAGE_ALLOC_TRACKING_LOCK_BIT,
+				    &trackings[pte_index]));
+	tracking = (struct page_alloc_tracking *)(trackings[pte_index] &
+						  PAGE_ALLOC_TRACKING_PTR_MASK);
+
+	trackings_count =
+		(unsigned long)atomic_long_dec_return_relaxed
+					((atomic_long_t *)&pte_page->index);
+	trackings_count &= PTE_PAGE_ALLOC_TRACKINGS_COUNT_MASK;
+
+	/* Store zero. This implies an unlock. */
+	smp_store_release(&trackings[pte_index], 0);
+	rcu_read_unlock();
+
+	kfree(tracking);
+
+	if (trackings_count)
+		return;
+
+	lock_page(pte_page);
+	trackings_count =
+	     (unsigned long)atomic_long_read((atomic_long_t *)&pte_page->index);
+	trackings_count &= PTE_PAGE_ALLOC_TRACKINGS_COUNT_MASK;
+
+	if (trackings_count) {
+		unlock_page(pte_page);
+		return;
+	}
+
+	trackings = read_alloc_tracks_ptr(pte_page);
+	if (!trackings) {
+		unlock_page(pte_page);
+		return;
+	}
+	WRITE_ONCE(pte_page->index, 0);
+	unlock_page(pte_page);
+
+	call_rcu(&virt_to_page(trackings)->rcu_head, __free_alloc_tracks_rcu);
+	return;
+}
+
+static void page_alloc_track_add_range(struct page_alloc_tracking *tracking,
+				       unsigned long addr, unsigned long size)
+{
+	WARN_ON(addr % 8);
+	WARN_ON(size % 8);
+
+	addr &= ~PAGE_MASK;
+	size = min_t(unsigned long, size, PAGE_SIZE - addr);
+
+	addr /= 8;
+	size /= 8;
+
+	bitmap_set(tracking->allocated, addr, size);
+}
+
+static void page_alloc_track_remove_range(struct page_alloc_tracking *tracking,
+					  unsigned long addr,
+					  unsigned long size)
+{
+	WARN_ON(addr % 8);
+	WARN_ON(size % 8);
+
+	addr &= ~PAGE_MASK;
+	size = min_t(unsigned long, size, PAGE_SIZE - addr);
+
+	addr /= 8;
+	size /= 8;
+
+	bitmap_clear(tracking->allocated, addr, size);
+}
+
+static bool page_alloc_track_empty(struct page_alloc_tracking const *tracking)
+{
+	return bitmap_empty(tracking->allocated, PAGE_ALLOC_TRACKING_BITS);
+}
 
 
 static inline unsigned long get_pa_from_mapping(unsigned long vaddr)
@@ -89,11 +346,41 @@ static unsigned long __alloc_pagetable_page(gfp_t gfp,
 	return (unsigned long)addr;
 }
 
+static void __free_pte_page_alloc_tracks(struct page *pte_page,
+					 struct list_head *freelist)
+{
+	unsigned long *trackings;
+	unsigned int i;
+
+	WARN_ON(PageLocked(pte_page));
+
+	if (likely(!pte_page->index))
+		return;
+	trackings = read_alloc_tracks_ptr(pte_page);
+	for (i = 0; i < PTRS_PER_PTE; ++i) {
+		if (!trackings[i])
+			continue;
+		WARN_ON(bit_spin_is_locked(PAGE_ALLOC_TRACKING_LOCK_BIT,
+					   &trackings[i]));
+		kfree((void *)trackings[i]);
+	}
+
+	if (freelist) {
+		list_add(&virt_to_page(trackings)->lru, freelist);
+		return;
+	}
+
+	free_page((unsigned long)trackings);
+}
+
 static void __free_pagetable_page(unsigned long addr,
 				  struct list_head *freelist)
 {
+	struct page *p = virt_to_page(addr);
+
+	__free_pte_page_alloc_tracks(p, freelist);
+
 	if (freelist) {
-		struct page *p = virt_to_page(addr);
 		list_add(&p->lru, freelist);
 		return;
 	}
@@ -103,6 +390,7 @@ static void __free_pagetable_page(unsigned long addr,
 
 static pte_t *kgr_kaiser_pagetable_walk(pgd_t *shadow_pgd,
 					unsigned long address,
+					bool create,
 					struct list_head *freelist)
 {
 	pmd_t *pmd;
@@ -112,7 +400,7 @@ static pte_t *kgr_kaiser_pagetable_walk(pgd_t *shadow_pgd,
 
 	if (pgd_none(*pgd)) {
 		WARN_ONCE(1, "All shadow pgds should have been populated");
-		return NULL;
+		return ERR_PTR(-ENOENT);
 	}
 	BUILD_BUG_ON(pgd_large(*pgd) != 0);
 
@@ -120,13 +408,17 @@ static pte_t *kgr_kaiser_pagetable_walk(pgd_t *shadow_pgd,
 	/* The shadow page tables do not use large mappings: */
 	if (pud_large(*pud)) {
 		WARN_ON(1);
-		return NULL;
+		return ERR_PTR(-EFBIG);
 	}
 	if (pud_none(*pud)) {
-		unsigned long new_pmd_page =
-			__alloc_pagetable_page(gfp, freelist);
-		if (!new_pmd_page)
+		unsigned long new_pmd_page;
+
+		if (!create)
 			return NULL;
+
+		new_pmd_page = __alloc_pagetable_page(gfp, freelist);
+		if (!new_pmd_page)
+			return ERR_PTR(-ENOMEM);
 		kgr_meltdown_shared_data_lock();
 		if (pud_none(*pud)) {
 			set_pud(pud, __pud(_KERNPG_TABLE | __pa(new_pmd_page)));
@@ -141,13 +433,17 @@ static pte_t *kgr_kaiser_pagetable_walk(pgd_t *shadow_pgd,
 	/* The shadow page tables do not use large mappings: */
 	if (pmd_large(*pmd)) {
 		WARN_ON(1);
-		return NULL;
+		return ERR_PTR(-EFBIG);
 	}
 	if (pmd_none(*pmd)) {
-		unsigned long new_pte_page =
-			__alloc_pagetable_page(gfp, freelist);
-		if (!new_pte_page)
+		unsigned long new_pte_page;
+
+		if (!create)
 			return NULL;
+
+		new_pte_page = __alloc_pagetable_page(gfp, freelist);
+		if (!new_pte_page)
+			return ERR_PTR(-ENOMEM);
 		kgr_meltdown_shared_data_lock();
 		if (pmd_none(*pmd)) {
 			set_pmd(pmd, __pmd(_KERNPG_TABLE | __pa(new_pte_page)));
@@ -168,10 +464,11 @@ static int kgr_kaiser_add_user_map(pgd_t *shadow_pgd,
 {
 	int ret = 0;
 	pte_t *pte;
-	unsigned long start_addr = (unsigned long )__start_addr;
-	unsigned long address = start_addr & PAGE_MASK;
-	unsigned long end_addr = PAGE_ALIGN(start_addr + size);
+	unsigned long start_addr = (unsigned long)__start_addr;
+	unsigned long end_addr = start_addr + size;
+	unsigned long addr;
 	unsigned long target_address;
+	struct page_alloc_tracking *alloc_track = NULL;
 
 	/*
 	 * It is convenient for callers to pass in __PAGE_KERNEL etc,
@@ -182,17 +479,35 @@ static int kgr_kaiser_add_user_map(pgd_t *shadow_pgd,
 	 */
 	flags &= ~_PAGE_GLOBAL;
 
-	for (; address < end_addr; address += PAGE_SIZE) {
-		target_address = get_pa_from_mapping(address);
+	for (addr = start_addr; addr < end_addr;
+	     addr &= PAGE_MASK, addr += PAGE_SIZE) {
+		target_address = get_pa_from_mapping(addr);
 		if (target_address == -1) {
 			ret = -EIO;
 			break;
 		}
-		pte = kgr_kaiser_pagetable_walk(shadow_pgd, address, freelist);
-		if (!pte) {
-			ret = -ENOMEM;
+		pte = kgr_kaiser_pagetable_walk(shadow_pgd, addr, true,
+						freelist);
+		if (IS_ERR(pte)) {
+			ret = PTR_ERR(pte);
 			break;
 		}
+
+		if (addr & ~PAGE_MASK || end_addr - addr < PAGE_SIZE) {
+			/* Partial page allocation */
+			unsigned long alloc_size;
+
+			alloc_size = min_t(unsigned long,
+					   PAGE_SIZE - (addr & ~PAGE_MASK),
+					   end_addr - addr);
+
+			alloc_track = get_page_alloc_track_locked(pte, true);
+			if (IS_ERR(alloc_track))
+				return PTR_ERR(alloc_track);
+			page_alloc_track_add_range(alloc_track, addr,
+						   alloc_size);
+		}
+
 		if (pte_none(*pte)) {
 			set_pte(pte, __pte(flags | target_address));
 		} else {
@@ -200,9 +515,59 @@ static int kgr_kaiser_add_user_map(pgd_t *shadow_pgd,
 			set_pte(&tmp, __pte(flags | target_address));
 			WARN_ON_ONCE(!pte_same(*pte, tmp));
 		}
+
+		if (alloc_track)
+			unlock_page_alloc_track(pte);
 	}
 	return ret;
 }
+
+
+static void kgr_kaiser_remove_user_map(pgd_t *shadow_pgd,
+				       const void *__start_addr,
+				       unsigned long size)
+{
+	pte_t *pte;
+	unsigned long start_addr = (unsigned long)__start_addr;
+	unsigned long end_addr = start_addr + size;
+	unsigned long addr;
+
+	for (addr = start_addr; addr < end_addr;
+	     addr &= PAGE_MASK, addr += PAGE_SIZE) {
+		pte = kgr_kaiser_pagetable_walk(shadow_pgd, addr, false,
+						NULL);
+		if (!pte)
+			continue;
+
+		if (unlikely(addr & ~PAGE_MASK ||
+			     end_addr - addr < PAGE_SIZE)) {
+			/* Partial page allocation */
+			struct page_alloc_tracking *alloc_track;
+			unsigned long alloc_size;
+
+			alloc_track = get_page_alloc_track_locked(pte, false);
+			if (!alloc_track) {
+				WARN_ON(!pte_none(*pte));
+				continue;
+			}
+
+			alloc_size = min_t(unsigned long,
+					   PAGE_SIZE - (addr & ~PAGE_MASK),
+					   end_addr - addr);
+			page_alloc_track_remove_range(alloc_track, addr,
+						      alloc_size);
+			if (page_alloc_track_empty(alloc_track)) {
+				set_pte(pte, __pte(0));
+				put_page_alloc_track(pte);
+			} else {
+				unlock_page_alloc_track(pte);
+			}
+		} else {
+			set_pte(pte, __pte(0));
+		}
+	}
+}
+
 
 static int kgr_kaiser_add_user_map_ptrs(pgd_t *shadow_pgd,
 					const void *start, const void *end,
@@ -441,18 +806,11 @@ int kgr_kaiser_add_mapping(unsigned long addr, unsigned long size,
 
 void kgr_kaiser_remove_mapping(unsigned long start, unsigned long size)
 {
-	unsigned long end = start + size;
-	unsigned long addr, next;
-	pgd_t *pgd;
-
 	if (!kgr_meltdown_active())
 		return;
 
-	pgd = kgr_meltdown_shared_data->shadow_pgd + pgd_index(start);
-	for (addr = start; addr < end; pgd++, addr = next) {
-		next = pgd_addr_end(addr, end);
-		kgr_unmap_pud_range_nofree(pgd, addr, next);
-	}
+	kgr_kaiser_remove_user_map(kgr_meltdown_shared_data->shadow_pgd,
+				   (const void *)start, size);
 }
 
 /*
