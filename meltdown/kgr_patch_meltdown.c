@@ -21,6 +21,7 @@
 #include "fork.h"
 #include "fork_kallsyms.h"
 #include "ldt_kallsyms.h"
+#include "perf_event_intel_ds.h"
 #include "perf_event_intel_ds_kallsyms.h"
 
 static struct {
@@ -116,6 +117,13 @@ void kgr_post_patch_callback(void)
 		ret = kgr_kaiser_map_all_thread_stacks();
 		if (ret) {
 			pr_err("failed to map thread stacks: %d, Meltdown unfixed\n",
+			       ret);
+			return;
+		}
+
+		ret = kgr_perf_event_intel_map_all_ds_buffers();
+		if (ret) {
+			pr_err("failed to map Intel DS buffers: %d, Meltdown unfixed\n",
 			       ret);
 			return;
 		}

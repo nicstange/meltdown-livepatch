@@ -6,6 +6,7 @@
 #include <linux/atomic.h>
 #include <linux/ptrace.h>
 #include <asm/perf_event.h>
+#include <linux/mutex.h>
 #include "perf_event_intel_ds.h"
 #include "perf_event_intel_ds_kallsyms.h"
 #include "kaiser.h"
@@ -13,6 +14,8 @@
 struct cpu_hw_events __percpu *kgr_cpu_hw_events;
 struct x86_pmu *kgr_x86_pmu;
 void * __percpu *kgr_insn_buffer;
+struct mutex *kgr_pmc_reserve_mutex;
+atomic_t *kgr_pmc_refcount;
 
 void (*kgr_release_ds_buffer)(int cpu);
 void (*kgr_init_debug_store_on_cpu)(int cpu);
@@ -500,4 +503,47 @@ void kgr_reserve_ds_buffers(void)
 	}
 
 	put_online_cpus();
+}
+
+
+int kgr_perf_event_intel_map_all_ds_buffers(void)
+{
+	int cpu;
+	struct debug_store *ds;
+	int ret;
+
+	mutex_lock(kgr_pmc_reserve_mutex);
+	if (!atomic_read(kgr_pmc_refcount)) {
+		mutex_unlock(kgr_pmc_reserve_mutex);
+		return 0;
+	}
+
+	for_each_possible_cpu(cpu) {
+		ds = per_cpu_ptr(kgr_cpu_hw_events, cpu)->ds;
+
+		if (!ds)
+			continue;
+
+		if (ds->pebs_buffer_base) {
+			ret = kgr_kaiser_add_mapping(ds->pebs_buffer_base,
+						kgr_x86_pmu->pebs_buffer_size,
+						__PAGE_KERNEL);
+			if (ret) {
+				mutex_unlock(kgr_pmc_reserve_mutex);
+				return ret;
+			}
+		}
+
+		if (ds->bts_buffer_base) {
+			ret = kgr_kaiser_add_mapping(ds->bts_buffer_base,
+						     BTS_BUFFER_SIZE,
+						     __PAGE_KERNEL);
+			if (ret) {
+				mutex_unlock(kgr_pmc_reserve_mutex);
+				return ret;
+			}
+		}
+	}
+	mutex_unlock(kgr_pmc_reserve_mutex);
+	return 0;
 }
