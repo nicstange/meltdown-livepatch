@@ -22,9 +22,13 @@ struct meltdown_shared_data
 		ps_disabled = 0, /* Disabled */
 		ps_enabled, /* Intermediate state: not disabled but
 			     * also not active. */
-		ps_active, /* KGraft patch has been applied _globally_
-			    * or a transition to a new one also patching
-			    * meltdown is in progress. */
+		ps_activating, /* KGraft patch has been applied _globally_.
+				* Populating the user mappings is in progress.
+				*/
+		ps_active, /* Fully active. A transition to a new
+			    * KGraft patch stacked on top might be in
+			    * progress.
+			    */
 	} ps;
 
 	struct kgr_pcpu_pgds __percpu *pcpu_pgds;

@@ -1443,3 +1443,63 @@ bad_fork_free:
 fork_out:
 	return ERR_PTR(retval);
 }
+
+
+extern rwlock_t *kgr_tasklist_lock;
+
+int kgr_kaiser_map_all_thread_stacks(void)
+{
+	struct task_struct *p, *t, *last;
+	int ret;
+
+restart_search:
+	last = NULL;
+	read_lock(kgr_tasklist_lock);
+	for_each_process_thread(p, t) {
+		if (!t->mm)
+			continue;
+
+		if (t->flags & PF_EXITING)
+			continue;
+
+		if (kgr_kaiser_is_thread_stack_mapped((void *)t->stack))
+			continue;
+
+		get_task_struct(t);
+		read_unlock(kgr_tasklist_lock);
+
+		if (last)
+			put_task_struct(last);
+		last = t;
+
+		ret = kgr_kaiser_map_thread_stack((void *)t->stack);
+		if (ret) {
+			put_task_struct(t);
+			return ret;
+		}
+
+		cond_resched();
+
+		/* Try to continue with the search */
+		read_lock(kgr_tasklist_lock);
+		if (!t->sighand) {
+			read_unlock(kgr_tasklist_lock);
+			put_task_struct(t);
+			goto restart_search;
+		}
+	}
+	read_unlock(kgr_tasklist_lock);
+
+	if (last) {
+		put_task_struct(last);
+
+		/*
+		 * We dropped out of tasklist_lock at least
+		 * once. Restart the search once again in order to
+		 * make sure that we don't miss any new member.
+		 */
+		goto restart_search;
+	}
+
+	return 0;
+}

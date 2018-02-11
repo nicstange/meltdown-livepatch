@@ -12,4 +12,6 @@ struct task_struct *kgr_copy_process(unsigned long clone_flags,
 				     unsigned long tls,
 				     int node);
 
+int kgr_kaiser_map_all_thread_stacks(void);
+
 #endif

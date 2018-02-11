@@ -77,6 +77,7 @@ static inline void kaiser_flush_tlb_on_return_to_user(void)
 int kgr_kaiser_add_mapping(unsigned long addr, unsigned long size,
 			   unsigned long flags);
 void kgr_kaiser_remove_mapping(unsigned long start, unsigned long size);
+bool kgr_kaiser_is_mapped(unsigned long start, unsigned long size);
 
 void kgr_native_set_pgd(pgd_t *pgdp, pgd_t pgd);
 
@@ -99,5 +100,10 @@ static inline void kgr_kaiser_unmap_thread_stack(void *stack)
 				  THREAD_SIZE - PAGE_SIZE, PAGE_SIZE);
 }
 
+static inline bool kgr_kaiser_is_thread_stack_mapped(void *stack)
+{
+	return kgr_kaiser_is_mapped((unsigned long)stack +
+				    THREAD_SIZE - PAGE_SIZE, PAGE_SIZE);
+}
 
 #endif

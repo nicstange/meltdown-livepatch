@@ -18,6 +18,7 @@
 #include "kaiser.h"
 #include "kaiser_kallsyms.h"
 #include "pcid.h"
+#include "fork.h"
 #include "fork_kallsyms.h"
 #include "ldt_kallsyms.h"
 #include "perf_event_intel_ds_kallsyms.h"
@@ -72,37 +73,55 @@ static void __uninstall_idt_table_repl(struct work_struct *w)
 
 void kgr_post_patch_callback(void)
 {
+	int ret;
+	enum patch_state ps = kgr_meltdown_patch_state();
+
 	pr_debug("kgr_post_patch_callback\n");
 
-	if (!kgr_meltdown_patch_state())
+	if (!ps)
 		return;
+
+	if (ps == ps_enabled)
+		kgr_meltdown_set_patch_state(ps_activating);
 
 	patch_entry_apply_start(!kgr_meltdown_shared_data->orig_idt.idt ?
 				&kgr_meltdown_shared_data->orig_idt : NULL);
 
-	/* Load the new idt on all cpus. */
+	/*
+	 * Load the new idt on all cpus. This also makes sure that the
+	 * above kgr_meltdown_set_patch_state() is visible everywhere.
+	 */
 	kgr_schedule_on_each_cpu(__install_idt_table_repl);
 
-	if (kgr_meltdown_shared_data->prev_patch_entry_drain_start) {
+	if (ps == ps_active) {
 		/* Clean handover */
 		kgr_meltdown_shared_data->prev_patch_entry_drain_start();
 		kgr_meltdown_shared_data->prev_patch_entry_drain_start = NULL;
-	} else if (kgr_meltdown_shared_data->dirty) {
-		/*
-		 * Unclean handover: there has been a revert inbetween
-		 * us and out predecessor.
-		 */
-		if (kgr_meltdown_shared_data_reset()) {
+	} else {
+		if (kgr_meltdown_shared_data->dirty) {
 			/*
-			 * In theory, this can't happen,
-			 * c.f. kgr_kaiser_reset_shadow_pgd()).
+			 * Unclean handover: there has been a revert inbetween
+			 * us and our predecessor.
 			 */
-			pr_err("failed to reset shared data, Meltdown unfixed\n");
+			if (kgr_meltdown_shared_data_reset()) {
+				/*
+				 * In theory, this can't happen,
+				 * c.f. kgr_kaiser_reset_shadow_pgd()).
+				 */
+				pr_err("failed to reset shared data, Meltdown unfixed\n");
+				return;
+			}
+		}
+
+		ret = kgr_kaiser_map_all_thread_stacks();
+		if (ret) {
+			pr_err("failed to map thread stacks: %d, Meltdown unfixed\n",
+			       ret);
 			return;
 		}
-	}
 
-	kgr_meltdown_set_patch_state(ps_active);
+		kgr_meltdown_set_patch_state(ps_active);
+	}
 }
 
 void kgr_pre_revert_callback(void)

@@ -281,6 +281,27 @@ static bool page_alloc_track_empty(struct page_alloc_tracking const *tracking)
 	return bitmap_empty(tracking->allocated, PAGE_ALLOC_TRACKING_BITS);
 }
 
+static bool page_alloc_contains_range(struct page_alloc_tracking *tracking,
+				      unsigned long addr,
+				      unsigned long size)
+{
+	unsigned long range[PAGE_ALLOC_TRACKING_BITS / BITS_PER_LONG];
+
+	WARN_ON(addr % 8);
+	WARN_ON(size % 8);
+
+	addr &= ~PAGE_MASK;
+	size = min_t(unsigned long, size, PAGE_SIZE - addr);
+
+	addr /= 8;
+	size /= 8;
+
+	bitmap_set(range, addr, size);
+
+	return bitmap_subset(range, tracking->allocated,
+			     PAGE_ALLOC_TRACKING_BITS);
+}
+
 
 static inline unsigned long get_pa_from_mapping(unsigned long vaddr)
 {
@@ -568,6 +589,54 @@ static void kgr_kaiser_remove_user_map(pgd_t *shadow_pgd,
 	}
 }
 
+static bool kgr_kaiser_is_user_mapped(pgd_t *shadow_pgd,
+				      const void *__start_addr,
+				      unsigned long size)
+{
+	pte_t *pte;
+	unsigned long start_addr = (unsigned long)__start_addr;
+	unsigned long end_addr = start_addr + size;
+	unsigned long addr;
+
+	for (addr = start_addr; addr < end_addr;
+	     addr &= PAGE_MASK, addr += PAGE_SIZE) {
+		pte = kgr_kaiser_pagetable_walk(shadow_pgd, addr, false,
+						NULL);
+		if (!pte)
+			return false;
+
+		if (unlikely(addr & ~PAGE_MASK ||
+			     end_addr - addr < PAGE_SIZE)) {
+			/* Partial page allocation */
+			struct page_alloc_tracking *alloc_track;
+			unsigned long alloc_size;
+
+			alloc_track = get_page_alloc_track_locked(pte, false);
+			if (!alloc_track) {
+				WARN_ON(!pte_none(*pte));
+				return false;
+			} else {
+				WARN_ON(pte_none(*pte));
+			}
+
+			alloc_size = min_t(unsigned long,
+					   PAGE_SIZE - (addr & ~PAGE_MASK),
+					   end_addr - addr);
+			if (!page_alloc_contains_range(alloc_track, addr,
+						       alloc_size)) {
+				unlock_page_alloc_track(pte);
+				return false;
+			}
+			unlock_page_alloc_track(pte);
+		} else {
+			if (pte_none(*pte))
+				return false;
+		}
+	}
+
+	return true;
+}
+
 
 static int kgr_kaiser_add_user_map_ptrs(pgd_t *shadow_pgd,
 					const void *start, const void *end,
@@ -797,7 +866,7 @@ pgd_t* kgr_kaiser_reset_shadow_pgd(pgd_t *old_shadow_pgd)
 int kgr_kaiser_add_mapping(unsigned long addr, unsigned long size,
 			   unsigned long flags)
 {
-	if (!kgr_meltdown_active())
+	if (kgr_meltdown_patch_state() < ps_activating)
 		return 0;
 
 	return kgr_kaiser_add_user_map(kgr_meltdown_shared_data->shadow_pgd,
@@ -806,11 +875,20 @@ int kgr_kaiser_add_mapping(unsigned long addr, unsigned long size,
 
 void kgr_kaiser_remove_mapping(unsigned long start, unsigned long size)
 {
-	if (!kgr_meltdown_active())
+	if (kgr_meltdown_patch_state() < ps_activating)
 		return;
 
 	kgr_kaiser_remove_user_map(kgr_meltdown_shared_data->shadow_pgd,
 				   (const void *)start, size);
+}
+
+bool kgr_kaiser_is_mapped(unsigned long start, unsigned long size)
+{
+	if (kgr_meltdown_patch_state() < ps_activating)
+		return false;
+
+	return kgr_kaiser_is_user_mapped(kgr_meltdown_shared_data->shadow_pgd,
+					 (const void *)start, size);
 }
 
 /*
