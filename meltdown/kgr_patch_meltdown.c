@@ -23,6 +23,7 @@
 #include "ldt_kallsyms.h"
 #include "perf_event_intel_ds.h"
 #include "perf_event_intel_ds_kallsyms.h"
+#include "exec_kallsyms.h"
 
 static struct {
 	char *name;
@@ -38,6 +39,7 @@ static struct {
 	KAISER_KALLSYMS
 	FORK_KALLSYMS
 	LDT_KALLSYMS
+	EXEC_KALLSYMS
 };
 
 static int __init kgr_patch_meltdown_kallsyms(void)

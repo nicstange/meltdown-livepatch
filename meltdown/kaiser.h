@@ -33,8 +33,13 @@ static inline struct mm_struct *kgr_pgd_page_get_mm(struct page *page)
 	return (struct mm_struct *)page->index;
 }
 
-#define kgr_mm_user_pgd(mm)				\
-	((pgd_t *)(mm)->suse_kabi_padding)
+static inline pgd_t* kgr_mm_user_pgd(struct mm_struct *mm)
+{
+	if (!mm)
+		return NULL;
+
+	return (pgd_t *)(mm)->suse_kabi_padding;
+}
 
 #define kgr_kern_pgd_mm(kern_pgd)			\
 	kgr_pgd_page_get_mm(virt_to_page(kern_pgd))

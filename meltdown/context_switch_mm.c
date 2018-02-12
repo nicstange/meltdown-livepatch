@@ -19,9 +19,10 @@ static void sched_switch_tracer(void *data,
 	struct mm_struct *prev_mm, *next_mm;
 	struct kgr_pcpu_pgds *cpu_pgds;
 	unsigned int cpu;
-	pgd_t *user_pgd = kgr_mm_user_pgd(next);
+	pgd_t *user_pgd = NULL;
 
 	next_mm = next->mm;
+	user_pgd = kgr_mm_user_pgd(next_mm);
 	if (!kgr_meltdown_active() ||
 	    !next_mm ||	/* No userspace task and we don't care. */
 	    !user_pgd) {
@@ -41,10 +42,12 @@ static void sched_switch_tracer(void *data,
 	if (!likely(this_cpu_has(X86_FEATURE_PCID)))
 		return;
 
-	cpu_pgds->user_pgd |= X86_CR3_PCID_ASID_USER;
+	cpu_pgds->user_pgd |= X86_CR3_PCID_USER_NOFLUSH;
 	cpu_pgds->kern_pgd |= X86_CR3_PCID_KERN_NOFLUSH;
 
-	if (next_mm == prev_mm) {
+	if (next_mm != prev_mm) {
+		kaiser_flush_tlb_on_return_to_user();
+	} else {
 		/*
 		 * The write of TLBSTATE_OK will stabilize
 		 * cpumask_test_cpu(cpu, mm_cpumask(next_mm)), c.f.
