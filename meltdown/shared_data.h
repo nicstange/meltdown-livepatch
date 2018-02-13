@@ -31,7 +31,7 @@ struct meltdown_shared_data
 			    */
 	} ps;
 
-	struct kgr_pcpu_pgds __percpu *pcpu_pgds;
+	struct kgr_pcpu_cr3s __percpu *pcpu_cr3s;
 
 
 	struct saved_idt orig_idt;

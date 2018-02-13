@@ -309,22 +309,10 @@ static inline void kgr_switch_mm(struct mm_struct *prev, struct mm_struct *next,
 	unsigned cpu = smp_processor_id();
 	/*
 	 * Fix CVE-2017-5754
-	 *  +13 lines
+	 *  +2 lines
 	 */
-	struct kgr_pcpu_pgds *cpu_pgds = kgr_this_cpu_pgds();
-	pgd_t *user_pgd = kgr_mm_user_pgd(next);
-
-	if (kgr_meltdown_active() && user_pgd) {
-		cpu_pgds->user_pgd = __pa(user_pgd);
-		cpu_pgds->kern_pgd = __pa(next->pgd);
-		if (likely(this_cpu_has(X86_FEATURE_PCID))) {
-			cpu_pgds->user_pgd |= X86_CR3_PCID_USER_NOFLUSH;
-			cpu_pgds->kern_pgd |= X86_CR3_PCID_KERN_NOFLUSH;
-		}
-	} else {
-		cpu_pgds->user_pgd = 0;
-		cpu_pgds->kern_pgd = 0;
-	}
+	pgd_t *user_pgd;
+	unsigned long user_cr3, kern_cr3;
 
 	if (likely(prev != next)) {
 #ifdef CONFIG_SMP
@@ -361,12 +349,22 @@ static inline void kgr_switch_mm(struct mm_struct *prev, struct mm_struct *next,
 		 * ordering guarantee we need.
 		 *
 		 */
-		load_cr3(next->pgd);
 		/*
 		 * Fix CVE-2017-5754
-		 *  +1 line
+		 *  +10 lines
 		 */
-		kaiser_flush_tlb_on_return_to_user();
+		user_pgd = NULL;
+		if (kgr_meltdown_active())
+			user_pgd = kgr_mm_user_pgd(next);
+		user_cr3 = kern_cr3 = 0;
+		if (user_pgd) {
+			user_cr3 = __pa(user_pgd);
+			kern_cr3 = __pa(next->pgd);
+		}
+		kgr_kaiser_set_user_cr3(user_cr3);
+		kgr_kaiser_set_kern_cr3(kern_cr3);
+
+		load_cr3(next->pgd);
 
 		kgr_trace_tlb_flush(TLB_FLUSH_ON_TASK_SWITCH, TLB_FLUSH_ALL);
 

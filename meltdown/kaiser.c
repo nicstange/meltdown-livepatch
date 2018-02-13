@@ -15,13 +15,13 @@
 #include "shared_data.h"
 #include "patch_entry.h"
 
-struct kgr_pcpu_pgds __percpu *__kgr_pcpu_pgds;
+struct kgr_pcpu_cr3s __percpu *__kgr_pcpu_cr3s;
 /*
  * Provide a dummy indirect pointer to __kgr_pcpu_pgds
  * in order to allow patch_entry to patch in the references to
  * it.
  */
-struct kgr_pcpu_pgds __percpu **kgr_pcpu_pgds = &__kgr_pcpu_pgds;
+struct kgr_pcpu_cr3s __percpu **kgr_pcpu_cr3s = &__kgr_pcpu_cr3s;
 
 
 struct mm_struct *kgr_init_mm;
@@ -711,8 +711,8 @@ static int kgr_kaiser_prepopulate_shadow_pgd(pgd_t *shadow_pgd,
 
 	for_each_possible_cpu(cpu) {
 		r = kgr_kaiser_add_user_map(shadow_pgd,
-			per_cpu_ptr(kgr_meltdown_shared_data->pcpu_pgds, cpu),
-			sizeof(struct kgr_pcpu_pgds), __PAGE_KERNEL,
+			per_cpu_ptr(kgr_meltdown_shared_data->pcpu_cr3s, cpu),
+			sizeof(struct kgr_pcpu_cr3s), __PAGE_KERNEL,
 			freelist);
 		if (r)
 			return r;
@@ -956,7 +956,7 @@ void kgr_native_set_pgd(pgd_t *pgdp, pgd_t pgd)
 
 int __init kgr_kaiser_init(void)
 {
-	__kgr_pcpu_pgds = kgr_meltdown_shared_data->pcpu_pgds;
+	__kgr_pcpu_cr3s = kgr_meltdown_shared_data->pcpu_cr3s;
 	return 0;
 }
 

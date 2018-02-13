@@ -17,7 +17,6 @@ static void sched_switch_tracer(void *data,
 				struct task_struct *next)
 {
 	struct mm_struct *prev_mm, *next_mm;
-	struct kgr_pcpu_pgds *cpu_pgds;
 	unsigned int cpu;
 	pgd_t *user_pgd = NULL;
 
@@ -26,28 +25,21 @@ static void sched_switch_tracer(void *data,
 	if (!kgr_meltdown_active() ||
 	    !next_mm ||	/* No userspace task and we don't care. */
 	    !user_pgd) {
-		cpu_pgds->user_pgd = 0;
-		cpu_pgds->kern_pgd = 0;
+		kgr_kaiser_set_kern_cr3(0);
+		kgr_kaiser_set_user_cr3(0);
 		return;
 	}
 
-	cpu_pgds = kgr_this_cpu_pgds();
 	prev_mm = prev->active_mm;
-	/* Be careful to retain an unset X86_CR3_PCID_NOFLUSH at the user_pgd. */
 	if (next_mm != prev_mm) {
-		cpu_pgds->user_pgd = __pa(user_pgd);
-		cpu_pgds->kern_pgd = __pa(next_mm->pgd);
-	}
-
-	if (!likely(this_cpu_has(X86_FEATURE_PCID)))
-		return;
-
-	cpu_pgds->user_pgd |= X86_CR3_PCID_USER_NOFLUSH;
-	cpu_pgds->kern_pgd |= X86_CR3_PCID_KERN_NOFLUSH;
-
-	if (next_mm != prev_mm) {
-		kaiser_flush_tlb_on_return_to_user();
+		kgr_kaiser_set_kern_cr3(__pa(next_mm->pgd));
+		kgr_kaiser_set_user_cr3(__pa(user_pgd));
 	} else {
+		if (!kgr_kaiser_get_user_cr3()) {
+			kgr_kaiser_set_kern_cr3(__pa(next_mm->pgd));
+			kgr_kaiser_set_user_cr3(__pa(user_pgd));
+			return;
+		}
 		/*
 		 * The write of TLBSTATE_OK will stabilize
 		 * cpumask_test_cpu(cpu, mm_cpumask(next_mm)), c.f.

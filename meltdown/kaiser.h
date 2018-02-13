@@ -14,17 +14,17 @@ pgd_t* kgr_kaiser_create_shadow_pgd(void);
 void kgr_kaiser_free_shadow_pgd(pgd_t *pgd);
 pgd_t* kgr_kaiser_reset_shadow_pgd(pgd_t *old_shadow_pgd);
 
-struct kgr_pcpu_pgds
+struct kgr_pcpu_cr3s
 {
-	unsigned long kern_pgd;
-	unsigned long user_pgd;
+	unsigned long kern_cr3;
+	unsigned long user_cr3;
 };
 
-extern struct kgr_pcpu_pgds __percpu *__kgr_pcpu_pgds;
+extern struct kgr_pcpu_cr3s __percpu *__kgr_pcpu_cr3s;
 
-static inline struct kgr_pcpu_pgds* kgr_this_cpu_pgds(void)
+static inline struct kgr_pcpu_cr3s* kgr_this_cpu_cr3s(void)
 {
-	return this_cpu_ptr(__kgr_pcpu_pgds);
+	return this_cpu_ptr(__kgr_pcpu_cr3s);
 }
 
 /* from arch/x86/mm/pgtable.c */
@@ -56,7 +56,6 @@ static inline pgd_t* kgr_user_pgd(pgd_t *kern_pgd)
 	if (!user_pgd)
 		return NULL;
 
-	user_pgd += (unsigned long)kern_pgd & ~PAGE_MASK;
 	return user_pgd;
 }
 
@@ -72,10 +71,37 @@ static inline pgd_t* kgr_user_pgd(pgd_t *kern_pgd)
 #define X86_CR3_PCID_KERN_NOFLUSH      (X86_CR3_PCID_NOFLUSH | X86_CR3_PCID_ASID_KERN)
 #define X86_CR3_PCID_USER_NOFLUSH      (X86_CR3_PCID_NOFLUSH | X86_CR3_PCID_ASID_USER)
 
+static inline void kgr_kaiser_set_kern_cr3(unsigned long cr3)
+{
+	struct kgr_pcpu_cr3s *cpu_cr3s;
+	cpu_cr3s = kgr_this_cpu_cr3s();
+
+	if (likely(this_cpu_has(X86_FEATURE_PCID)) && cr3)
+		cr3 |= X86_CR3_PCID_KERN_NOFLUSH;
+	WRITE_ONCE(cpu_cr3s->kern_cr3, cr3);
+}
+
+static inline void kgr_kaiser_set_user_cr3(unsigned long cr3)
+{
+	struct kgr_pcpu_cr3s *cpu_cr3s;
+	cpu_cr3s = kgr_this_cpu_cr3s();
+
+	if (unlikely(!this_cpu_has(X86_FEATURE_PCID)))
+		cr3 &= ~X86_CR3_PCID_USER_NOFLUSH;
+	WRITE_ONCE(cpu_cr3s->user_cr3, cr3);
+}
+
+static inline unsigned long kgr_kaiser_get_user_cr3(void)
+{
+	return READ_ONCE(kgr_this_cpu_cr3s()->user_cr3);
+}
 
 static inline void kaiser_flush_tlb_on_return_to_user(void)
 {
-	kgr_this_cpu_pgds()->user_pgd &= ~X86_CR3_PCID_NOFLUSH;
+	unsigned long user_cr3 = kgr_kaiser_get_user_cr3();
+
+	WRITE_ONCE(kgr_this_cpu_cr3s()->user_cr3,
+		   user_cr3 & ~X86_CR3_PCID_NOFLUSH);
 }
 
 

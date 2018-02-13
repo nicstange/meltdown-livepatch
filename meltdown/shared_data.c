@@ -40,8 +40,8 @@ static void __shared_data_free(struct meltdown_shared_data *sd)
 		return;
 	if (sd->shadow_pgd)
 		kgr_kaiser_free_shadow_pgd(sd->shadow_pgd);
-	if (sd->pcpu_pgds)
-		free_percpu(sd->pcpu_pgds);
+	if (sd->pcpu_cr3s)
+		free_percpu(sd->pcpu_cr3s);
 	kfree(sd);
 }
 
@@ -54,10 +54,10 @@ static struct meltdown_shared_data *__init __shared_data_alloc(void)
 	if (!sd)
 		return NULL;
 
-	kgr_meltdown_shared_data->pcpu_pgds =
-		kgr__alloc_reserved_percpu(sizeof(struct kgr_pcpu_pgds),
+	kgr_meltdown_shared_data->pcpu_cr3s =
+		kgr__alloc_reserved_percpu(sizeof(struct kgr_pcpu_cr3s),
 					   4 * sizeof(long));
-	if (!kgr_meltdown_shared_data->pcpu_pgds) {
+	if (!kgr_meltdown_shared_data->pcpu_cr3s) {
 		__shared_data_free(sd);
 		return NULL;
 	}
