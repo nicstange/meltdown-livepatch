@@ -26,6 +26,7 @@
 #include "fork.h"
 #include "fork_kallsyms.h"
 #include "kaiser.h"
+#include "shared_data.h"
 
 #if IS_ENABLED(CONFIG_ARCH_TASK_STRUCT_ALLOCATOR)
 #error "Livepatch supports only CONFIG_ARCH_TASK_STRUCT_ALLOCATOR=n"
@@ -902,11 +903,68 @@ kgr_init_task_pid(struct task_struct *task, enum pid_type type, struct pid *pid)
 }
 
 
+
+static void *pending_forks = &pending_forks;
+
+/* New */
+static void add_pending_fork(struct task_struct *t)
+{
+	write_lock(kgr_tasklist_lock);
+	t->suse_kabi_padding = pending_forks;
+	pending_forks = &t->suse_kabi_padding;
+	write_unlock(kgr_tasklist_lock);
+}
+
+/* New */
+static void ___remove_pending_fork(struct task_struct *t)
+{
+	void *prev, *cur;
+	struct task_struct *cur_task;
+
+	prev = &pending_forks;
+	cur = pending_forks;
+	while (cur != &pending_forks) {
+		cur_task = container_of(cur, struct task_struct,
+					suse_kabi_padding);
+		if (cur_task == t) {
+			*(void **)prev = t->suse_kabi_padding;
+			t->suse_kabi_padding = NULL;
+			break;
+		}
+
+		prev = cur;
+		cur = cur_task->suse_kabi_padding;
+	}
+}
+
+/* New */
+static void __remove_pending_fork(struct task_struct *t)
+{
+	if (likely(!t->suse_kabi_padding))
+		return;
+
+	___remove_pending_fork(t);
+}
+
+/* New */
+static void remove_pending_fork(struct task_struct *t)
+{
+
+	if (likely(!t->suse_kabi_padding))
+		return;
+
+	write_lock(kgr_tasklist_lock);
+	if (likely(t->suse_kabi_padding))
+		___remove_pending_fork(t);
+	write_unlock(kgr_tasklist_lock);
+}
+
+
 /* Patched, inlined */
 static inline void kgr_free_thread_info(struct thread_info *ti)
 {
 	/*
-	 * Fix CVE-2017-5454
+	 * Fix CVE-2017-5754
 	 *  +1 line
 	 */
 	kgr_kaiser_unmap_thread_stack(ti);
@@ -933,6 +991,11 @@ static struct task_struct *kgr_dup_task_struct(struct task_struct *orig,
 	struct task_struct *tsk;
 	struct thread_info *ti;
 	int err;
+	/*
+	 * Fix CVE-2017-5754
+	 *  +1 line
+	 */
+	enum patch_state ps;
 
 	if (node == NUMA_NO_NODE)
 		node = kgr_tsk_fork_get_node(orig);
@@ -951,13 +1014,20 @@ static struct task_struct *kgr_dup_task_struct(struct task_struct *orig,
 	tsk->stack = ti;
 
 	/*
-	 * Fix CVE-2017-5454
-	 *  +5 lines
+	 * Fix CVE-2017-5754
+	 *  +12 lines
 	 */
-	if (orig->mm) {
+	ps = kgr_meltdown_patch_state();
+	if (ps && ps >= ps_activating) {
 		err = kgr_kaiser_map_thread_stack(tsk->stack);
 		if (err)
 			goto free_ti;
+	} else {
+		/*
+		 * Make sure that kgr_kaiser_map_all_thread_stacks()
+		 * will find us.
+		 */
+		add_pending_fork(tsk);
 	}
 
 #ifdef CONFIG_SECCOMP
@@ -1003,7 +1073,7 @@ free_tsk:
 }
 
 
-/* Patched, calls inlined dup_task_struct() and free_thread_info() */
+/* Patched, calls inlined dup_task_struct() */
 struct task_struct *kgr_copy_process(unsigned long clone_flags,
 				     unsigned long stack_start,
 				     unsigned long stack_size,
@@ -1302,6 +1372,11 @@ struct task_struct *kgr_copy_process(unsigned long clone_flags,
 	 * Need tasklist lock for parent etc handling!
 	 */
 	write_lock_irq(kgr_tasklist_lock);
+	/*
+	 * Fix CVE-2017-5754
+	 *  +1 line
+	 */
+	__remove_pending_fork(p);
 
 	/* CLONE_PARENT re-uses the old parent */
 	if (clone_flags & (CLONE_PARENT|CLONE_THREAD)) {
@@ -1439,6 +1514,11 @@ bad_fork_cleanup_count:
 	atomic_dec(&p->cred->user->processes);
 	kgr_exit_creds(p);
 bad_fork_free:
+	/*
+	 * Fix CVE-2017-5754
+	 *  +1 line
+	 */
+	remove_pending_fork(p);
 	free_task(p);
 fork_out:
 	return ERR_PTR(retval);
@@ -1451,14 +1531,12 @@ int kgr_kaiser_map_all_thread_stacks(void)
 {
 	struct task_struct *p, *t, *last;
 	int ret;
+	void *pending;
 
 restart_search:
 	last = NULL;
 	read_lock(kgr_tasklist_lock);
 	for_each_process_thread(p, t) {
-		if (!t->mm)
-			continue;
-
 		if (t->flags & PF_EXITING)
 			continue;
 
@@ -1500,6 +1578,31 @@ restart_search:
 		 */
 		goto restart_search;
 	}
+
+	/*
+	 * Process the pending forks now which might not have seen
+	 * ps_activating and haven't made it onto the global tasklist
+	 * yet.
+	 */
+	read_lock(kgr_tasklist_lock);
+	pending = pending_forks;
+	while (pending != &pending_forks) {
+		t = container_of(pending, struct task_struct,
+				 suse_kabi_padding);
+		pending_forks = t->suse_kabi_padding;
+		t->suse_kabi_padding = NULL;
+		get_task_struct(t);
+		read_unlock(kgr_tasklist_lock);
+
+		ret = kgr_kaiser_map_thread_stack((void *)t->stack);
+		put_task_struct(t);
+		if (ret)
+			return ret;
+
+		read_lock(kgr_tasklist_lock);
+		pending = pending_forks;
+	}
+	read_unlock(kgr_tasklist_lock);
 
 	return 0;
 }
