@@ -7,6 +7,7 @@
 #include "ldt.h"
 #include "perf_event_intel_ds.h"
 #include "exec.h"
+#include "efi_64.h"
 
 struct work_struct;
 
@@ -39,5 +40,25 @@ void kgr_schedule_tail(struct task_struct *prev);
 	KGR_PATCH(release_bts_buffer, kgr_release_bts_buffer),	\
 	KGR_PATCH(reserve_ds_buffers, kgr_reserve_ds_buffers),	\
 	KGR_PATCH(flush_old_exec, kgr_flush_old_exec),		\
+	KGR_PATCH(efi_thunk_set_virtual_address_map,		\
+		kgr_efi_thunk_set_virtual_address_map),	\
+	KGR_PATCH(efi_thunk_get_time, kgr_efi_thunk_get_time),	\
+	KGR_PATCH(efi_thunk_set_time, kgr_efi_thunk_set_time),	\
+	KGR_PATCH(efi_thunk_get_wakeup_time,			\
+			kgr_efi_thunk_get_wakeup_time),	\
+	KGR_PATCH(efi_thunk_set_wakeup_time,			\
+			kgr_efi_thunk_set_wakeup_time),	\
+	KGR_PATCH(efi_thunk_get_variable,			\
+			kgr_efi_thunk_get_variable),		\
+	KGR_PATCH(efi_thunk_set_variable,			\
+			kgr_efi_thunk_set_variable),		\
+	KGR_PATCH(efi_thunk_get_next_variable,			\
+			kgr_efi_thunk_get_next_variable),	\
+	KGR_PATCH(efi_thunk_get_next_high_mono_count,		\
+		kgr_efi_thunk_get_next_high_mono_count),	\
+	KGR_PATCH(efi_thunk_reset_system,			\
+			kgr_efi_thunk_reset_system),		\
+	KGR_PATCH(efi_thunk_query_variable_info,		\
+			kgr_efi_thunk_query_variable_info),	\
 
 #endif
