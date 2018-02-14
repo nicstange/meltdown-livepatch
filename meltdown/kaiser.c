@@ -11,9 +11,16 @@
 #include <linux/bit_spinlock.h>
 #include <linux/slab.h>
 #include <linux/err.h>
+#include <uapi/asm/vsyscall.h>
 #include "kaiser.h"
+#include "kaiser_kallsyms.h"
 #include "shared_data.h"
 #include "patch_entry.h"
+
+#if !IS_ENABLED(CONFIG_X86_VSYSCALL_EMULATION)
+#error "Livepatch supports only CONFIG_X86_VSYSCALL_EMULATION=y\n"
+#endif
+
 
 struct kgr_pcpu_cr3s __percpu *__kgr_pcpu_cr3s;
 /*
@@ -411,19 +418,31 @@ static void __free_pagetable_page(unsigned long addr,
 
 static pte_t *kgr_kaiser_pagetable_walk(pgd_t *shadow_pgd,
 					unsigned long address,
-					bool create,
+					bool create, bool user,
 					struct list_head *freelist)
 {
 	pmd_t *pmd;
 	pud_t *pud;
 	pgd_t *pgd = shadow_pgd + pgd_index(address);
 	gfp_t gfp = (GFP_KERNEL | __GFP_NOTRACK);
+	unsigned long prot = _KERNPG_TABLE;
 
 	if (pgd_none(*pgd)) {
 		WARN_ONCE(1, "All shadow pgds should have been populated");
 		return ERR_PTR(-ENOENT);
 	}
 	BUILD_BUG_ON(pgd_large(*pgd) != 0);
+
+	if (user) {
+		/*
+		 * The vsyscall page is the only page that will have
+		 *  _PAGE_USER set. Catch everything else.
+		 */
+		BUG_ON(address != VSYSCALL_ADDR);
+
+		set_pgd(pgd, __pgd(pgd_val(*pgd) | _PAGE_USER));
+		prot = _PAGE_TABLE;
+	}
 
 	pud = pud_offset(pgd, address);
 	/* The shadow page tables do not use large mappings: */
@@ -442,7 +461,7 @@ static pte_t *kgr_kaiser_pagetable_walk(pgd_t *shadow_pgd,
 			return ERR_PTR(-ENOMEM);
 		kgr_meltdown_shared_data_lock();
 		if (pud_none(*pud)) {
-			set_pud(pud, __pud(_KERNPG_TABLE | __pa(new_pmd_page)));
+			set_pud(pud, __pud(prot | __pa(new_pmd_page)));
 			__inc_zone_page_state(virt_to_page((void *)
 					      new_pmd_page), NR_PAGETABLE);
 		} else
@@ -467,7 +486,7 @@ static pte_t *kgr_kaiser_pagetable_walk(pgd_t *shadow_pgd,
 			return ERR_PTR(-ENOMEM);
 		kgr_meltdown_shared_data_lock();
 		if (pmd_none(*pmd)) {
-			set_pmd(pmd, __pmd(_KERNPG_TABLE | __pa(new_pte_page)));
+			set_pmd(pmd, __pmd(prot | __pa(new_pte_page)));
 			__inc_zone_page_state(virt_to_page((void *)
 						new_pte_page), NR_PAGETABLE);
 		} else
@@ -508,6 +527,7 @@ static int kgr_kaiser_add_user_map(pgd_t *shadow_pgd,
 			break;
 		}
 		pte = kgr_kaiser_pagetable_walk(shadow_pgd, addr, true,
+						flags & _PAGE_USER,
 						freelist);
 		if (IS_ERR(pte)) {
 			ret = PTR_ERR(pte);
@@ -555,7 +575,7 @@ static void kgr_kaiser_remove_user_map(pgd_t *shadow_pgd,
 
 	for (addr = start_addr; addr < end_addr;
 	     addr &= PAGE_MASK, addr += PAGE_SIZE) {
-		pte = kgr_kaiser_pagetable_walk(shadow_pgd, addr, false,
+		pte = kgr_kaiser_pagetable_walk(shadow_pgd, addr, false, false,
 						NULL);
 		if (!pte)
 			continue;
@@ -600,7 +620,7 @@ static bool kgr_kaiser_is_user_mapped(pgd_t *shadow_pgd,
 
 	for (addr = start_addr; addr < end_addr;
 	     addr &= PAGE_MASK, addr += PAGE_SIZE) {
-		pte = kgr_kaiser_pagetable_walk(shadow_pgd, addr, false,
+		pte = kgr_kaiser_pagetable_walk(shadow_pgd, addr, false, false,
 						NULL);
 		if (!pte)
 			return false;
@@ -649,6 +669,7 @@ static int kgr_kaiser_add_user_map_ptrs(pgd_t *shadow_pgd,
 				       freelist);
 }
 
+enum kgr_vsyscall_mode_enum *kgr_vsyscall_mode;
 
 char (*kgr__irqentry_text_start)[];
 char (*kgr__irqentry_text_end)[];
@@ -671,13 +692,27 @@ struct debug_store {
 	u64	pebs_event_reset[MAX_PEBS_EVENTS];
 };
 
-struct debug_store *kgr_cpu_debug_store;
-
 static int kgr_kaiser_prepopulate_shadow_pgd(pgd_t *shadow_pgd,
 					     struct list_head *freelist)
 {
 	int r;
 	int cpu;
+
+	/*
+	 * Note that this sets _PAGE_USER and it needs to happen when the
+	 * pagetable hierarchy gets created, i.e., early. Otherwise
+	 * kaiser_pagetable_walk() will encounter initialized PTEs in the
+	 * hierarchy and not set the proper permissions, leading to the
+	 * pagefaults with page-protection violations when trying to read the
+	 * vsyscall page. For example.
+	 */
+	if (*kgr_vsyscall_mode != KGR_VSYSCALL_MODE_NONE) {
+		r = kgr_kaiser_add_user_map(shadow_pgd, (void *)VSYSCALL_ADDR,
+					    PAGE_SIZE, __PAGE_KERNEL_VSYSCALL,
+					    freelist);
+		if (r)
+			return r;
+	}
 
 	r = kgr_kaiser_add_user_map_ptrs(shadow_pgd, __kgr_entry_text_begin,
 					 __kgr_entry_text_end,
