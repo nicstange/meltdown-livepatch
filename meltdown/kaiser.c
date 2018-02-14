@@ -521,7 +521,7 @@ static int kgr_kaiser_add_user_map(pgd_t *shadow_pgd,
 
 	for (addr = start_addr; addr < end_addr;
 	     addr &= PAGE_MASK, addr += PAGE_SIZE) {
-		target_address = get_pa_from_mapping(addr);
+		target_address = get_pa_from_mapping(addr) & PAGE_MASK;
 		if (target_address == -1) {
 			ret = -EIO;
 			break;
