@@ -3,9 +3,9 @@
 
 #include <linux/percpu.h>
 #include <linux/mm_types.h>
+#include <linux/rcupdate.h>
 #include <asm/pgtable.h>
 #include <asm/page.h>
-
 
 int kgr_kaiser_init(void);
 void kgr_kaiser_cleanup(void);
@@ -41,22 +41,22 @@ static inline pgd_t* kgr_mm_user_pgd(struct mm_struct *mm)
 	return (pgd_t *)(mm)->suse_kabi_padding;
 }
 
-#define kgr_kern_pgd_mm(kern_pgd)			\
-	kgr_pgd_page_get_mm(virt_to_page(kern_pgd))
-
-static inline pgd_t* kgr_user_pgd(pgd_t *kern_pgd)
+static inline pgd_t* kgr_mm_user_pgd_rcu(struct mm_struct *mm)
 {
-	struct mm_struct *mm = kgr_kern_pgd_mm(kern_pgd);
-	pgd_t *user_pgd;
-
 	if (!mm)
 		return NULL;
 
-	user_pgd = kgr_mm_user_pgd(mm);
-	if (!user_pgd)
-		return NULL;
+	return rcu_dereference((mm)->suse_kabi_padding);
+}
 
-	return user_pgd;
+#define kgr_kern_pgd_mm(kern_pgd)			\
+	kgr_pgd_page_get_mm(virt_to_page(kern_pgd))
+
+static inline pgd_t* kgr_user_pgd_rcu(pgd_t *kern_pgd)
+{
+	struct mm_struct *mm = kgr_kern_pgd_mm(kern_pgd);
+
+	return kgr_mm_user_pgd_rcu(mm);
 }
 
 #define X86_CR3_PCID_NOFLUSH_BIT 63 /* Preserve old PCID */

@@ -947,12 +947,13 @@ pgd_t kgr_kaiser_set_shadow_pgd(pgd_t *kern_pgdp, pgd_t pgd)
 		return pgd;
 
 	kern_pgd = (pgd_t *)((unsigned long)kern_pgdp & PAGE_MASK);
-	user_pgd = kgr_user_pgd(kern_pgd);
+	rcu_read_lock();
+	user_pgd = kgr_user_pgd_rcu(kern_pgd);
 	if (!user_pgd)
 		return pgd;
 	user_pgdp = user_pgd + (kern_pgdp - kern_pgd);
-
 	user_pgdp->pgd = pgd.pgd;
+	rcu_read_unlock();
 
 	/*
 	 * Note: upstream kaiser conditionally sets _PAGE_NX on the
