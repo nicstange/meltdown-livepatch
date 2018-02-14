@@ -54,24 +54,18 @@ static struct meltdown_shared_data *__init __shared_data_alloc(void)
 	if (!sd)
 		return NULL;
 
-	kgr_meltdown_shared_data->pcpu_cr3s =
+	sd->pcpu_cr3s =
 		kgr__alloc_reserved_percpu(sizeof(struct kgr_pcpu_cr3s),
 					   4 * sizeof(long));
-	if (!kgr_meltdown_shared_data->pcpu_cr3s) {
+	if (!sd->pcpu_cr3s) {
 		__shared_data_free(sd);
 		return NULL;
 	}
 
-	kgr_meltdown_shared_data->ps = ps_disabled;
-	spin_lock_init(&kgr_meltdown_shared_data->lock);
-	kgr_meltdown_shared_data->refcnt = 1;
-	INIT_LIST_HEAD(&kgr_meltdown_shared_data->patchers);
-
-	sd->shadow_pgd = kgr_kaiser_create_shadow_pgd();
-	if (!sd->shadow_pgd) {
-		__shared_data_free(sd);
-		return NULL;
-	}
+	sd->ps = ps_disabled;
+	spin_lock_init(&sd->lock);
+	sd->refcnt = 1;
+	INIT_LIST_HEAD(&sd->patchers);
 
 	return sd;
 }
@@ -103,6 +97,15 @@ int __init kgr_meltdown_shared_data_init(void)
 		return 0;
 	}
 	kgr_meltdown_shared_data = sd;
+
+	sd->shadow_pgd = kgr_kaiser_create_shadow_pgd();
+	if (!sd->shadow_pgd) {
+		__shared_data_free(sd);
+		kgr_meltdown_shared_data = NULL;
+		mutex_unlock(&module_mutex);
+		return -ENOMEM;
+	}
+
 	mutex_unlock(&module_mutex);
 	return 0;
 }
