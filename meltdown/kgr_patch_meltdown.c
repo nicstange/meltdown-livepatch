@@ -258,4 +258,5 @@ void kgr_patch_meltdown_cleanup(void)
 	patch_entry_cleanup();
 	context_switch_mm_cleanup();
 	kgr_meltdown_shared_data_cleanup();
+	rcu_barrier();
 }
