@@ -10,6 +10,7 @@
 #include "efi_64.h"
 #include "memory.h"
 #include "pgtable-generic.h"
+#include "pgtable.h"
 
 struct work_struct;
 
@@ -64,5 +65,7 @@ void kgr_schedule_tail(struct task_struct *prev);
 	KGR_PATCH(__pud_alloc, kgr__pud_alloc),		\
 	KGR_PATCH(free_pgd_range, kgr_free_pgd_range),		\
 	KGR_PATCH(pgd_clear_bad, kgr_pgd_clear_bad),		\
+	KGR_PATCH(pgd_alloc, kgr_pgd_alloc),			\
+	KGR_PATCH(pgd_free, kgr_pgd_free),			\
 
 #endif

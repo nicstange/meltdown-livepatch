@@ -26,6 +26,8 @@
 #include "exec_kallsyms.h"
 #include "efi_64_kallsyms.h"
 #include "memory_kallsyms.h"
+#include "pgtable.h"
+#include "pgtable_kallsyms.h"
 
 static struct {
 	char *name;
@@ -45,6 +47,7 @@ static struct {
 	EXEC_KALLSYMS
 	EFI_64_KALLSYMS
 	MEMORY_KALLSYMS
+	PGTABLE_KALLSYMS
 };
 
 static int __init kgr_patch_meltdown_kallsyms(void)
@@ -152,6 +155,7 @@ void kgr_pre_revert_callback(void)
 	kgr_meltdown_set_patch_state(ps_deactivating);
 	patch_entry_unapply_start(&kgr_meltdown_shared_data->orig_idt);
 	kgr_schedule_on_each_cpu(__uninstall_idt_table_repl);
+	kgr_free_all_user_pgds();
 	kgr_meltdown_set_patch_state(ps_enabled);
 	kgr_meltdown_shared_data_mark_dirty();
 	patch_entry_drain_start();
