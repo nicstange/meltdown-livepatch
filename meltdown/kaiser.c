@@ -256,7 +256,7 @@ static void page_alloc_track_add_range(struct page_alloc_tracking *tracking,
 				       unsigned long addr, unsigned long size)
 {
 	WARN_ON(addr % 8);
-	WARN_ON(size % 8);
+	size = ALIGN(size, 8);
 
 	addr &= ~PAGE_MASK;
 	size = min_t(unsigned long, size, PAGE_SIZE - addr);
