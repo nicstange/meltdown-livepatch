@@ -233,6 +233,6 @@ extern void (*kgr_arch_release_task_struct)(struct task_struct *tsk);
 	{ "put_seccomp_filter",					\
 			(void *)&kgr_put_seccomp_filter },		\
 	{ "arch_release_task_struct",					\
-			(void *)&kgr_arch_dup_task_struct },		\
+			(void *)&kgr_arch_release_task_struct },	\
 
 #endif
