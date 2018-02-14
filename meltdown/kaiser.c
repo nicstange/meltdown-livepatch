@@ -931,56 +931,36 @@ static inline bool is_userspace_pgd(pgd_t *pgdp)
 	return ((unsigned long)pgdp % PAGE_SIZE) < (PAGE_SIZE / 2);
 }
 
-static pgd_t kgr_kaiser_set_shadow_pgd(pgd_t *pgdp, pgd_t pgd)
+pgd_t kgr_kaiser_set_shadow_pgd(pgd_t *kern_pgdp, pgd_t pgd)
 {
+	pgd_t *kern_pgd;
+	pgd_t *user_pgd;
 	pgd_t *user_pgdp;
 
-	if (!kgr_meltdown_active())
+	if (kgr_meltdown_patch_state() < ps_activating)
 		return pgd;
 
-	user_pgdp = kgr_user_pgd(pgdp);
-	if (!user_pgdp)
+	if (!(pgd.pgd & _PAGE_USER) && pgd.pgd)
 		return pgd;
+
+	if (!is_userspace_pgd(kern_pgdp))
+		return pgd;
+
+	kern_pgd = (pgd_t *)((unsigned long)kern_pgdp & PAGE_MASK);
+	user_pgd = kgr_user_pgd(kern_pgd);
+	if (!user_pgd)
+		return pgd;
+	user_pgdp = user_pgd + (kern_pgdp - kern_pgd);
+
+	user_pgdp->pgd = pgd.pgd;
 
 	/*
-	 * Do we need to also populate the shadow pgd?  Check _PAGE_USER to
-	 * skip cases like kexec and EFI which make temporary low mappings.
+	 * Note: upstream kaiser conditionally sets _PAGE_NX on the
+	 * kernel's pgd instance. For livepatch
+	 * revertability, we must not do that.
 	 */
-	if (pgd.pgd & _PAGE_USER) {
-		if (is_userspace_pgd(pgdp)) {
-			user_pgdp->pgd = pgd.pgd;
-
-			/*
-			 * Note: upstream kaiser sets _PAGE_NX on the
-			 * kernel's pgd instance. For livepatch
-			 * revertability, we must not do that.
-			 */
-			/*
-			 * Even if the entry is *mapping* userspace, ensure
-			 * that userspace can not use it.  This way, if we
-			 * get out to userspace running on the kernel CR3,
-			 * userspace will crash instead of running.
-			 */
-			/* if (__supported_pte_mask & _PAGE_NX) */
-			/*	pgd.pgd |= _PAGE_NX; */
-		}
-	} else if (!pgd.pgd) {
-		/*
-		 * pgd_clear() cannot check _PAGE_USER, and is even used to
-		 * clear corrupted pgd entries: so just rely on cases like
-		 * kexec and EFI never to be using pgd_clear().
-		 */
-		if (is_userspace_pgd(pgdp))
-			user_pgdp->pgd = pgd.pgd;
-	}
 	return pgd;
 }
-
-void kgr_native_set_pgd(pgd_t *pgdp, pgd_t pgd)
-{
-	*pgdp = kgr_kaiser_set_shadow_pgd(pgdp, pgd);
-}
-
 
 int __init kgr_kaiser_init(void)
 {

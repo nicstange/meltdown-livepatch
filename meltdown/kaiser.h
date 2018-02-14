@@ -112,9 +112,6 @@ int kgr_kaiser_add_mapping(unsigned long addr, unsigned long size,
 void kgr_kaiser_remove_mapping(unsigned long start, unsigned long size);
 bool kgr_kaiser_is_mapped(unsigned long start, unsigned long size);
 
-void kgr_native_set_pgd(pgd_t *pgdp, pgd_t pgd);
-
-
 static inline int kgr_kaiser_map_thread_stack(void *stack)
 {
 	/*
@@ -137,6 +134,28 @@ static inline bool kgr_kaiser_is_thread_stack_mapped(void *stack)
 {
 	return kgr_kaiser_is_mapped((unsigned long)stack +
 				    THREAD_SIZE - PAGE_SIZE, PAGE_SIZE);
+}
+
+
+pgd_t kgr_kaiser_set_shadow_pgd(pgd_t *kern_pgdp, pgd_t pgd);
+
+
+/* Patched, inlined */
+static inline void kgr_native_set_pgd(pgd_t *pgdp, pgd_t pgd)
+{
+	/*
+	 * Fix CVE-2017-5754
+	 *  -1 line, +1 line
+	 */
+	*pgdp = kgr_kaiser_set_shadow_pgd(pgdp, pgd);
+}
+
+#define kgr_set_pgd kgr_native_set_pgd
+
+/* Patched, inlined, calls native_set_pgd() */
+static inline void kgr_pgd_clear(pgd_t *pgdp)
+{
+	kgr_set_pgd(pgdp, __pgd(0));
 }
 
 #endif
