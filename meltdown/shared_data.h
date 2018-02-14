@@ -25,6 +25,10 @@ struct meltdown_shared_data
 		ps_activating, /* KGraft patch has been applied _globally_.
 				* Populating the user mappings is in progress.
 				*/
+		ps_deactivating = ps_activating, /* KGraft patch is still
+						  * globally active and
+						  * shadow pgds are maintained
+						  */
 		ps_active, /* Fully active. A transition to a new
 			    * KGraft patch stacked on top might be in
 			    * progress.

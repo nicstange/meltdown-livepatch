@@ -74,6 +74,8 @@ static void __install_idt_table_repl(struct work_struct *w)
 
 static void __uninstall_idt_table_repl(struct work_struct *w)
 {
+	kgr_kaiser_set_kern_cr3(0);
+	kgr_kaiser_set_user_cr3(0);
 	kgr_pcid_disable_cpu();
 	patch_entry_unapply_finish_cpu();
 }
@@ -89,23 +91,7 @@ void kgr_post_patch_callback(void)
 	if (!ps)
 		return;
 
-	if (ps == ps_enabled)
-		kgr_meltdown_set_patch_state(ps_activating);
-
-	patch_entry_apply_start(!kgr_meltdown_shared_data->orig_idt.idt ?
-				&kgr_meltdown_shared_data->orig_idt : NULL);
-
-	/*
-	 * Load the new idt on all cpus. This also makes sure that the
-	 * above kgr_meltdown_set_patch_state() is visible everywhere.
-	 */
-	kgr_schedule_on_each_cpu(__install_idt_table_repl);
-
-	if (ps == ps_active) {
-		/* Clean handover */
-		kgr_meltdown_shared_data->prev_patch_entry_drain_start();
-		kgr_meltdown_shared_data->prev_patch_entry_drain_start = NULL;
-	} else {
+	else if (ps == ps_enabled) {
 		if (kgr_meltdown_shared_data->dirty) {
 			/*
 			 * Unclean handover: there has been a revert inbetween
@@ -121,6 +107,23 @@ void kgr_post_patch_callback(void)
 			}
 		}
 
+		kgr_meltdown_set_patch_state(ps_activating);
+	}
+
+	patch_entry_apply_start(!kgr_meltdown_shared_data->orig_idt.idt ?
+				&kgr_meltdown_shared_data->orig_idt : NULL);
+
+	/*
+	 * Load the new idt on all cpus. This also makes sure that the
+	 * above kgr_meltdown_set_patch_state() is visible everywhere.
+	 */
+	kgr_schedule_on_each_cpu(__install_idt_table_repl);
+
+	if (ps == ps_active) {
+		/* Clean handover */
+		kgr_meltdown_shared_data->prev_patch_entry_drain_start();
+		kgr_meltdown_shared_data->prev_patch_entry_drain_start = NULL;
+	} else {
 		ret = kgr_kaiser_map_all_thread_stacks();
 		if (ret) {
 			pr_err("failed to map thread stacks: %d, Meltdown unfixed\n",
@@ -146,10 +149,11 @@ void kgr_pre_revert_callback(void)
 	if (!kgr_meltdown_patch_state())
 		return;
 
-	kgr_meltdown_shared_data_mark_dirty();
-	kgr_meltdown_set_patch_state(ps_enabled);
+	kgr_meltdown_set_patch_state(ps_deactivating);
 	patch_entry_unapply_start(&kgr_meltdown_shared_data->orig_idt);
 	kgr_schedule_on_each_cpu(__uninstall_idt_table_repl);
+	kgr_meltdown_set_patch_state(ps_enabled);
+	kgr_meltdown_shared_data_mark_dirty();
 	patch_entry_drain_start();
 }
 
