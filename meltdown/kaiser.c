@@ -779,13 +779,6 @@ static int kgr_kaiser_prepopulate_shadow_pgd(pgd_t *shadow_pgd,
 					    __PAGE_KERNEL, freelist);
 		if (r)
 			return r;
-
-		r = kgr_kaiser_add_user_map(shadow_pgd,
-					per_cpu_ptr(kgr_cpu_debug_store, cpu),
-					sizeof(*kgr_cpu_debug_store),
-					__PAGE_KERNEL, freelist);
-		if (r)
-			return r;
 	}
 
 	return 0;

@@ -524,6 +524,13 @@ int kgr_perf_event_intel_map_all_ds_buffers(void)
 		if (!ds)
 			continue;
 
+		ret = kgr_kaiser_add_mapping((unsigned long)ds, sizeof(*ds),
+					     __PAGE_KERNEL);
+		if (ret) {
+			mutex_unlock(kgr_pmc_reserve_mutex);
+			return ret;
+		}
+
 		if (ds->pebs_buffer_base) {
 			ret = kgr_kaiser_add_mapping(ds->pebs_buffer_base,
 						kgr_x86_pmu->pebs_buffer_size,
