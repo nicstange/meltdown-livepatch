@@ -560,6 +560,8 @@ static int kgr_kaiser_add_user_map(pgd_t *shadow_pgd,
 		if (alloc_track)
 			unlock_page_alloc_track(pte);
 	}
+
+	kaiser_flush_tlb_on_return_to_user();
 	return ret;
 }
 
@@ -607,6 +609,8 @@ static void kgr_kaiser_remove_user_map(pgd_t *shadow_pgd,
 			set_pte(pte, __pte(0));
 		}
 	}
+
+	kaiser_flush_tlb_on_return_to_user();
 }
 
 static bool kgr_kaiser_is_user_mapped(pgd_t *shadow_pgd,
