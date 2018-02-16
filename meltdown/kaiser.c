@@ -272,7 +272,7 @@ static void page_alloc_track_remove_range(struct page_alloc_tracking *tracking,
 					  unsigned long size)
 {
 	WARN_ON(addr % 8);
-	WARN_ON(size % 8);
+	size = ALIGN(size, 8);
 
 	addr &= ~PAGE_MASK;
 	size = min_t(unsigned long, size, PAGE_SIZE - addr);
@@ -295,7 +295,7 @@ static bool page_alloc_contains_range(struct page_alloc_tracking *tracking,
 	unsigned long range[PAGE_ALLOC_TRACKING_BITS / BITS_PER_LONG];
 
 	WARN_ON(addr % 8);
-	WARN_ON(size % 8);
+	size = ALIGN(size, 8);
 
 	addr &= ~PAGE_MASK;
 	size = min_t(unsigned long, size, PAGE_SIZE - addr);
