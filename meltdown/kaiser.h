@@ -88,7 +88,7 @@ static inline void kgr_kaiser_set_user_cr3(unsigned long cr3)
 
 	if (unlikely(!this_cpu_has(X86_FEATURE_PCID)))
 		cr3 &= ~X86_CR3_PCID_USER_NOFLUSH;
-	else
+	else if (cr3)
 		cr3 |= X86_CR3_PCID_ASID_USER;
 	WRITE_ONCE(cpu_cr3s->user_cr3, cr3);
 }
