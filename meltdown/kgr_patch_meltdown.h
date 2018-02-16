@@ -31,6 +31,11 @@ void kgr_schedule_tail(struct task_struct *prev);
 		  kgr_native_flush_tlb_global),		\
 	KGR_PATCH(native_flush_tlb_single,			\
 		  kgr_native_flush_tlb_single),		\
+	KGR_PATCH(flush_tlb_func, kgr_flush_tlb_func),		\
+	KGR_PATCH(flush_tlb_mm_range, kgr_flush_tlb_mm_range),	\
+	KGR_PATCH(flush_tlb_page, kgr_flush_tlb_page),		\
+	KGR_PATCH(do_kernel_range_flush,			\
+			kgr_do_kernel_range_flush),		\
 	KGR_PATCH(free_task, kgr_free_task),			\
 	KGR_PATCH(copy_process, kgr_copy_process),		\
 	KGR_PATCH(alloc_ldt_struct, kgr_alloc_ldt_struct),	\

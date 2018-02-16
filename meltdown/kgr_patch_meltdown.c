@@ -28,6 +28,7 @@
 #include "memory_kallsyms.h"
 #include "pgtable.h"
 #include "pgtable_kallsyms.h"
+#include "tlb_kallsyms.h"
 
 static struct {
 	char *name;
@@ -48,6 +49,7 @@ static struct {
 	EFI_64_KALLSYMS
 	MEMORY_KALLSYMS
 	PGTABLE_KALLSYMS
+	TLB_KALLSYMS
 };
 
 static int __init kgr_patch_meltdown_kallsyms(void)

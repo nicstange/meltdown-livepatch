@@ -3,8 +3,6 @@
 
 #include <linux/pid.h>
 
-extern struct tracepoint *kgr__tracepoint_tlb_flush;
-
 extern struct static_key *kgr_rdpmc_always_available;
 
 struct task_struct;
@@ -33,8 +31,6 @@ extern void (*kgr_do_close_on_exec)(struct files_struct *files);
 
 
 #define EXEC_KALLSYMS							\
-	{ "__tracepoint_tlb_flush",					\
-			(void *)&kgr__tracepoint_tlb_flush},		\
 	{ "rdpmc_always_available",					\
 			(void *)&kgr_rdpmc_always_available},		\
 	{ "mm_release", (void *)&kgr_mm_release },			\

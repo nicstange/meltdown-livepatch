@@ -125,8 +125,6 @@ extern struct page* (*kgr_alloc_kmem_pages_node)(int nid, gfp_t gfp_mask,
 						 unsigned int order);
 extern void (*kgr_free_kmem_pages)(unsigned long addr, unsigned int order);
 extern enum hrtimer_restart (*kgr_it_real_fn)(struct hrtimer *timer);
-extern void (*kgr_flush_tlb_mm_range)(struct mm_struct *mm, unsigned long start,
-				      unsigned long end, unsigned long vmflag);
 extern void (*kgr_arch_release_thread_info)(struct thread_info *ti);
 extern void (*kgr_ftrace_graph_exit_task)(struct task_struct *t);
 extern void (*kgr_put_seccomp_filter)(struct task_struct *tsk);
@@ -225,7 +223,6 @@ extern void (*kgr_arch_release_task_struct)(struct task_struct *tsk);
 			(void *)&kgr_alloc_kmem_pages_node },		\
 	{ "free_kmem_pages", (void *)&kgr_free_kmem_pages },		\
 	{ "it_real_fn", (void *)&kgr_it_real_fn },			\
-	{ "flush_tlb_mm_range", (void *)&kgr_flush_tlb_mm_range },	\
 	{ "arch_release_thread_info",					\
 			(void *)&kgr_arch_release_thread_info },	\
 	{ "ftrace_graph_exit_task",					\

@@ -1,11 +1,35 @@
+#include <linux/mm.h>
 #include <asm/tlbflush.h>
 #include <asm/processor.h>
+#include <asm/paravirt.h>
+#include <asm/hardirq.h>
 
 #include "kaiser.h"
 #include "shared_data.h"
 #include "tlb.h"
+#include "tlb_kallsyms.h"
 
 
+#if IS_ENABLED(CONFIG_DEBUG_TLBFLUSH)
+#error "Livepatch supports only CONFIG_DEBUG_TLBFLUSH=n"
+#endif
+
+
+struct tracepoint *kgr__tracepoint_tlb_flush;
+unsigned long *kgr_tlb_single_page_flush_ceiling;
+
+int (*kgr_cpumask_any_but)(const struct cpumask *mask, unsigned int cpu);
+
+
+/* from arch/x86/mm/tlb.c */
+struct flush_tlb_info {
+	struct mm_struct *flush_mm;
+	unsigned long flush_start;
+	unsigned long flush_end;
+};
+
+
+/* New */
 static inline void __invpcid(unsigned long pcid, unsigned long addr,
 			     unsigned long type)
 {
@@ -28,26 +52,26 @@ static inline void __invpcid(unsigned long pcid, unsigned long addr,
 #define INVPCID_TYPE_ALL_INCL_GLOBAL	2
 #define INVPCID_TYPE_ALL_NON_GLOBAL	3
 
-/* Flush all mappings for a given pcid and addr, not including globals. */
+/* New. Flush all mappings for a given pcid and addr, not including globals. */
 static inline void invpcid_flush_one(unsigned long pcid,
 				     unsigned long addr)
 {
 	__invpcid(pcid, addr, INVPCID_TYPE_INDIV_ADDR);
 }
 
-/* Flush all mappings for a given PCID, not including globals. */
+/* New. Flush all mappings for a given PCID, not including globals. */
 static inline void invpcid_flush_single_context(unsigned long pcid)
 {
 	__invpcid(pcid, 0, INVPCID_TYPE_SINGLE_CTXT);
 }
 
-/* Flush all mappings, including globals, for all PCIDs. */
+/* New. Flush all mappings, including globals, for all PCIDs. */
 static inline void invpcid_flush_all(void)
 {
 	__invpcid(0, 0, INVPCID_TYPE_ALL_INCL_GLOBAL);
 }
 
-/* Flush all mappings for all PCIDs except globals. */
+/* New. Flush all mappings for all PCIDs except globals. */
 static inline void invpcid_flush_all_nonglobals(void)
 {
 	__invpcid(0, 0, INVPCID_TYPE_ALL_NON_GLOBAL);
@@ -66,10 +90,9 @@ static inline void kgr__native_flush_tlb(void)
 	preempt_disable();
 	/*
 	 * Fix CVE-2017-5754
-	 *  +2 lines
+	 *  +1 line
 	 */
-	if (kgr_meltdown_active())
-		kaiser_flush_tlb_on_return_to_user();
+	kaiser_flush_tlb_on_return_to_user();
 	native_write_cr3(native_read_cr3());
 	preempt_enable();
 }
@@ -145,8 +168,7 @@ static inline void kgr__native_flush_tlb_single(unsigned long addr)
 	 */
 	unsigned long cr4 = this_cpu_read(cpu_tlbstate.cr4);
 	if (!this_cpu_has(X86_FEATURE_INVPCID) || !(cr4 & X86_CR4_PCIDE)) {
-		if (kgr_meltdown_active())
-			kaiser_flush_tlb_on_return_to_user();
+		kaiser_flush_tlb_on_return_to_user();
 		asm volatile("invlpg (%0)" ::"r" (addr) : "memory");
 		return;
 	}
@@ -252,4 +274,145 @@ void kgr_native_flush_tlb_global(void)
 void kgr_native_flush_tlb_single(unsigned long addr)
 {
 	kgr__native_flush_tlb_single(addr);
+}
+
+
+#define kgr__flush_tlb_single(addr) kgr__native_flush_tlb_single(addr)
+
+#define kgr__flush_tlb kgr__native_flush_tlb
+#define kgr_local_flush_tlb() kgr__flush_tlb()
+
+
+/* Patched, inlined, calls Paravirt-patched __flush_tlb_single() */
+static inline void kgr__flush_tlb_one(unsigned long addr)
+{
+	count_vm_tlb_event(NR_TLB_LOCAL_FLUSH_ONE);
+	kgr__flush_tlb_single(addr);
+}
+
+/* Patched, calls Paravirt-patched __flush_tlb_single() */
+void kgr_flush_tlb_func(void *info)
+{
+	struct flush_tlb_info *f = info;
+
+	inc_irq_stat(irq_tlb_count);
+
+	if (f->flush_mm && f->flush_mm != this_cpu_read(cpu_tlbstate.active_mm))
+		return;
+
+	count_vm_tlb_event(NR_TLB_REMOTE_FLUSH_RECEIVED);
+	if (this_cpu_read(cpu_tlbstate.state) == TLBSTATE_OK) {
+		if (f->flush_end == TLB_FLUSH_ALL) {
+			kgr_local_flush_tlb();
+			kgr_trace_tlb_flush(TLB_REMOTE_SHOOTDOWN, TLB_FLUSH_ALL);
+		} else {
+			unsigned long addr;
+			unsigned long nr_pages =
+				(f->flush_end - f->flush_start) / PAGE_SIZE;
+			addr = f->flush_start;
+			while (addr < f->flush_end) {
+				kgr__flush_tlb_single(addr);
+				addr += PAGE_SIZE;
+			}
+			kgr_trace_tlb_flush(TLB_REMOTE_SHOOTDOWN, nr_pages);
+		}
+	} else
+		leave_mm(smp_processor_id());
+
+}
+
+/* Patched, calls Paravirt-patched __flush_tlb_single() */
+void kgr_flush_tlb_mm_range(struct mm_struct *mm, unsigned long start,
+			    unsigned long end, unsigned long vmflag)
+{
+	unsigned long addr;
+	/* do a global flush by default */
+	unsigned long base_pages_to_flush = TLB_FLUSH_ALL;
+
+	preempt_disable();
+	if (current->active_mm != mm) {
+		/* Synchronize with switch_mm. */
+		smp_mb();
+
+		goto out;
+	}
+
+	if (!current->mm) {
+		leave_mm(smp_processor_id());
+
+		/* Synchronize with switch_mm. */
+		smp_mb();
+
+		goto out;
+	}
+
+	if ((end != TLB_FLUSH_ALL) && !(vmflag & VM_HUGETLB))
+		base_pages_to_flush = (end - start) >> PAGE_SHIFT;
+
+	/*
+	 * Both branches below are implicit full barriers (MOV to CR or
+	 * INVLPG) that synchronize with switch_mm.
+	 */
+	if (base_pages_to_flush > *kgr_tlb_single_page_flush_ceiling) {
+		base_pages_to_flush = TLB_FLUSH_ALL;
+		count_vm_tlb_event(NR_TLB_LOCAL_FLUSH_ALL);
+		kgr_local_flush_tlb();
+	} else {
+		/* flush range by one by one 'invlpg' */
+		for (addr = start; addr < end;	addr += PAGE_SIZE) {
+			count_vm_tlb_event(NR_TLB_LOCAL_FLUSH_ONE);
+			kgr__flush_tlb_single(addr);
+		}
+	}
+	kgr_trace_tlb_flush(TLB_LOCAL_MM_SHOOTDOWN, base_pages_to_flush);
+out:
+	if (base_pages_to_flush == TLB_FLUSH_ALL) {
+		start = 0UL;
+		end = TLB_FLUSH_ALL;
+	}
+	if (kgr_cpumask_any_but(mm_cpumask(mm), smp_processor_id()) < nr_cpu_ids)
+		flush_tlb_others(mm_cpumask(mm), mm, start, end);
+	preempt_enable();
+}
+
+/*
+ * Patched, calls Paravirt-patched __flush_tlb_single() (through
+ * __flush_tlb_one()).
+ */
+void kgr_flush_tlb_page(struct vm_area_struct *vma, unsigned long start)
+{
+	struct mm_struct *mm = vma->vm_mm;
+
+	preempt_disable();
+
+	if (current->active_mm == mm) {
+		if (current->mm) {
+			/*
+			 * Implicit full barrier (INVLPG) that synchronizes
+			 * with switch_mm.
+			 */
+			kgr__flush_tlb_one(start);
+		} else {
+			leave_mm(smp_processor_id());
+
+			/* Synchronize with switch_mm. */
+			smp_mb();
+		}
+	}
+
+	if (kgr_cpumask_any_but(mm_cpumask(mm), smp_processor_id()) < nr_cpu_ids)
+		flush_tlb_others(mm_cpumask(mm), mm, start, start + PAGE_SIZE);
+
+	preempt_enable();
+}
+
+/* Patched, calls Paravirt-patched __flush_tlb_single() */
+void kgr_do_kernel_range_flush(void *info)
+{
+	struct flush_tlb_info *f = info;
+	unsigned long addr;
+
+	/* flush range by one by one 'invlpg' */
+	for (addr = f->flush_start; addr < f->flush_end; addr += PAGE_SIZE)
+		kgr__flush_tlb_single(addr);
 }

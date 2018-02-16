@@ -27,6 +27,7 @@
 #include "fork_kallsyms.h"
 #include "kaiser.h"
 #include "shared_data.h"
+#include "tlb.h"
 
 #if IS_ENABLED(CONFIG_ARCH_TASK_STRUCT_ALLOCATOR)
 #error "Livepatch supports only CONFIG_ARCH_TASK_STRUCT_ALLOCATOR=n"
@@ -256,8 +257,6 @@ struct page* (*kgr_alloc_kmem_pages_node)(int nid, gfp_t gfp_mask,
 					  unsigned int order);
 void (*kgr_free_kmem_pages)(unsigned long addr, unsigned int order);
 enum hrtimer_restart (*kgr_it_real_fn)(struct hrtimer *timer);
-void (*kgr_flush_tlb_mm_range)(struct mm_struct *mm, unsigned long start,
-			       unsigned long end, unsigned long vmflag);
 
 void (*kgr_arch_release_thread_info)(struct thread_info *ti);
 void (*kgr_ftrace_graph_exit_task)(struct task_struct *t);
