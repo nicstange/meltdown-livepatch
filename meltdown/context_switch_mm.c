@@ -35,9 +35,12 @@ static void sched_switch_tracer(void *data,
 		kgr_kaiser_set_kern_cr3(__pa(next_mm->pgd));
 		kgr_kaiser_set_user_cr3(__pa(user_pgd));
 	} else {
-		kgr_kaiser_set_kern_cr3(__pa(next_mm->pgd));
-		kgr_kaiser_set_user_cr3(__pa(user_pgd) |
-					X86_CR3_PCID_NOFLUSH);
+		if (!kgr_kaiser_get_user_cr3()) {
+			kgr_kaiser_set_kern_cr3(__pa(next_mm->pgd));
+			kgr_kaiser_set_user_cr3(__pa(user_pgd));
+			return;
+		}
+
 		/*
 		 * The write of TLBSTATE_OK will stabilize
 		 * cpumask_test_cpu(cpu, mm_cpumask(next_mm)), c.f.
