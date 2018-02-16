@@ -675,8 +675,12 @@ static int kgr_kaiser_add_user_map_ptrs(pgd_t *shadow_pgd,
 
 enum kgr_vsyscall_mode_enum *kgr_vsyscall_mode;
 
+char (*kgr__entry_text_start)[];
+char (*kgr__entry_text_end)[];
+
 char (*kgr__irqentry_text_start)[];
 char (*kgr__irqentry_text_end)[];
+
 
 char (*kgr_exception_stacks)
 	[(N_EXCEPTION_STACKS - 1) * EXCEPTION_STKSZ + DEBUG_STKSZ];
@@ -739,6 +743,12 @@ static int kgr_kaiser_prepopulate_shadow_pgd(pgd_t *shadow_pgd,
 	r = kgr_kaiser_add_user_map(shadow_pgd, kgr_trace_idt_table,
 				    sizeof(kgr_trace_idt_table),
 				    __PAGE_KERNEL_RO, freelist);
+	if (r)
+		return r;
+
+	r = kgr_kaiser_add_user_map_ptrs(shadow_pgd, kgr__entry_text_start,
+					 kgr__entry_text_end,
+					__PAGE_KERNEL_RX, freelist);
 	if (r)
 		return r;
 

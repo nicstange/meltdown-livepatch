@@ -12,6 +12,8 @@ enum kgr_vsyscall_mode_enum
 
 extern struct mm_struct *kgr_init_mm;
 extern enum kgr_vsyscall_mode_enum *kgr_vsyscall_mode;
+extern char (*kgr__entry_text_start)[];
+extern char (*kgr__entry_text_end)[];
 extern char (*kgr__irqentry_text_start)[];
 extern char (*kgr__irqentry_text_end)[];
 extern char (*kgr_exception_stacks)
@@ -21,6 +23,8 @@ extern vector_irq_t *kgr_vector_irq;
 #define KAISER_KALLSYMS						\
 	{ "init_mm", (void *)&kgr_init_mm },				\
 	{ "vsyscall_mode", (void *)&kgr_vsyscall_mode },		\
+	{ "__entry_text_start", (void *)&kgr__entry_text_start },	\
+	{ "__entry_text_end", (void *)&kgr__entry_text_end },	\
 	{ "__irqentry_text_start",					\
 			(void *)&kgr__irqentry_text_start },		\
 	{ "__irqentry_text_end", (void *)&kgr__irqentry_text_end },	\
