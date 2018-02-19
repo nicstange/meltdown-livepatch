@@ -16,8 +16,8 @@ bool *kgr_kgr_revert;
 unsigned long (*kgr_kgr_immutable)[];
 rwlock_t *kgr_tasklist_lock;
 
-int (*kgr_kgr_patch_code)(struct kgr_patch_fun *patch_fun, bool final,
-			  bool revert, bool replace_revert);
+/* int (*kgr_kgr_patch_code)(struct kgr_patch_fun *patch_fun, bool final, */
+/* 			  bool revert, bool replace_revert); */
 bool (*kgr_kgr_patch_contains)(const struct kgr_patch *p,
 			const struct kgr_patch_fun *patch_fun);
 void (*kgr_kgr_patching_failed)(struct kgr_patch *patch,
@@ -27,6 +27,15 @@ void (*kgr_kgr_handle_irq_cpu)(struct work_struct *work);
 void (*kgr_signal_wake_up_state)(struct task_struct *t, unsigned int state);
 int (*kgr_schedule_on_each_cpu)(work_func_t func);
 
+int (*kgr_kgr_init_ftrace_ops)(struct kgr_patch_fun *patch_fun);
+struct kgr_patch_fun *
+(*kgr_kgr_get_patch_fun)(const struct kgr_patch_fun *patch_fun,
+			 enum kgr_find_type type);
+int (*kgr_kgr_switch_fops)(struct kgr_patch_fun *patch_fun,
+			struct ftrace_ops *new_fops, struct ftrace_ops *unreg_fops);
+
+static int kgr_kgr_patch_code(struct kgr_patch_fun *patch_fun, bool final,
+			bool revert, bool replace_revert);
 
 /* from linux/sched.h */
 /* calls non-exported signal_wake_up_state() */
@@ -302,6 +311,168 @@ static int kgr_kgr_revert_replaced_funs(struct kgr_patch *patch)
 					return ret;
 				}
 			}
+
+	return 0;
+}
+
+
+/* inlined */
+/* line 423 */
+static bool kgr_kgr_is_object_loaded(const char *objname)
+{
+	struct module *mod;
+
+	if (!objname)
+		return true;
+
+	mutex_lock(&module_mutex);
+	mod = find_module(objname);
+	mutex_unlock(&module_mutex);
+
+	/*
+	 * Do not mess with a work of kgr_module_init() and a going notifier.
+	 */
+	return (mod && mod->kgr_alive);
+}
+
+/* inlined */
+/* line 652 */
+static bool kgr_kgr_is_patch_fun(const struct kgr_patch_fun *patch_fun,
+		 enum kgr_find_type type)
+{
+	struct kgr_patch_fun *found_pf;
+
+	if (type == KGR_IN_PROGRESS)
+		return patch_fun->patch == *kgr_kgr_patch;
+
+	found_pf = kgr_kgr_get_patch_fun(patch_fun, type);
+	return patch_fun == found_pf;
+}
+
+
+/* inlined */
+/* line 685 */
+static struct ftrace_ops *
+kgr_kgr_get_old_fops(const struct kgr_patch_fun *patch_fun)
+{
+	struct kgr_patch_fun *pf = kgr_kgr_get_patch_fun(patch_fun, KGR_PREVIOUS);
+
+	return pf ? &pf->ftrace_ops_fast : NULL;
+}
+
+
+/* Patched */
+int kgr_kgr_patch_code(struct kgr_patch_fun *patch_fun, bool final,
+		bool revert, bool replace_revert)
+{
+	struct ftrace_ops *new_ops = NULL, *unreg_ops = NULL;
+	/*
+	 * Fix race at reversion
+	 *  -1 line, +1 line
+	 */
+	enum kgr_patch_state next_state, prev_state;
+	int err;
+
+	switch (patch_fun->state) {
+	case KGR_PATCH_INIT:
+		if (revert || final || replace_revert)
+			return -EINVAL;
+
+		if (!kgr_kgr_is_object_loaded(patch_fun->objname)) {
+			patch_fun->state = KGR_PATCH_SKIPPED;
+			return 0;
+		}
+
+		err = kgr_kgr_init_ftrace_ops(patch_fun);
+		if (err)
+			return err;
+
+		next_state = KGR_PATCH_SLOW;
+		new_ops = &patch_fun->ftrace_ops_slow;
+		/*
+		 * If some previous patch already patched a function, the old
+		 * fops need to be disabled, otherwise the new redirection will
+		 * never be used.
+		 */
+		unreg_ops = kgr_kgr_get_old_fops(patch_fun);
+		break;
+	case KGR_PATCH_SLOW:
+		if (revert || !final || replace_revert)
+			return -EINVAL;
+		next_state = KGR_PATCH_APPLIED;
+		new_ops = &patch_fun->ftrace_ops_fast;
+		unreg_ops = &patch_fun->ftrace_ops_slow;
+		break;
+	case KGR_PATCH_APPLIED:
+		if (!revert || final)
+			return -EINVAL;
+		next_state = KGR_PATCH_REVERT_SLOW;
+		/*
+		 * Update ftrace ops only when used. It is always needed for
+		 * normal revert and in case of replace_all patch for the last
+		 * patch_fun stacked (which has been as such called till now).
+		 */
+		if (!replace_revert ||
+		    kgr_kgr_is_patch_fun(patch_fun, KGR_LAST_FINALIZED)) {
+			new_ops = &patch_fun->ftrace_ops_slow;
+			unreg_ops = &patch_fun->ftrace_ops_fast;
+		}
+		break;
+	case KGR_PATCH_REVERT_SLOW:
+		if (!revert || !final)
+			return -EINVAL;
+		next_state = KGR_PATCH_REVERTED;
+		/*
+		 * Update ftrace only when used. Normal revert removes the slow
+		 * ops and enables fast ops from the fallback patch if any. In
+		 * case of replace_all patch and reverting old patch_funs we
+		 * just need to remove the slow stub and only for the last old
+		 * patch_fun. The original code will be used.
+		 */
+		if (!replace_revert) {
+			unreg_ops = &patch_fun->ftrace_ops_slow;
+			new_ops = kgr_kgr_get_old_fops(patch_fun);
+		} else if (kgr_kgr_is_patch_fun(patch_fun, KGR_LAST_FINALIZED)) {
+			unreg_ops = &patch_fun->ftrace_ops_slow;
+		}
+		break;
+	case KGR_PATCH_REVERTED:
+		if (!revert || final || replace_revert)
+			return -EINVAL;
+		return 0;
+	case KGR_PATCH_SKIPPED:
+		return 0;
+	default:
+		return -EINVAL;
+	}
+
+	/*
+	 * Fix race at reversion
+	 *  +5 lines
+	 */
+	prev_state = patch_fun->state;
+	if (next_state == KGR_PATCH_REVERT_SLOW) {
+		WRITE_ONCE(patch_fun->state, next_state);
+		smp_wmb();
+	}
+	/*
+	 * In case of error the caller can still have a chance to restore the
+	 * previous consistent state.
+	 */
+	/*
+	 * Fix race at reversion
+	 *  -3 lines, +5 lines
+	 */
+	err = kgr_kgr_switch_fops(patch_fun, new_ops, unreg_ops);
+	if (err) {
+		patch_fun->state = prev_state;
+		return err;
+	}
+
+	patch_fun->state = next_state;
+
+	pr_debug("redirection for %s:%s,%lu done\n",
+		kgr_kgr_get_objname(patch_fun), patch_fun->name, patch_fun->sympos);
 
 	return 0;
 }
