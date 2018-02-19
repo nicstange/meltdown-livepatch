@@ -231,13 +231,19 @@ pgd_t *kgr_pgd_alloc(struct mm_struct *mm)
 	spin_lock(kgr_pgd_lock);
 	/*
 	 * Fix CVE-2017-5754
-	 *  +8 lines
+	 *  +14 lines
 	 */
+	/*
+	 * Clear out any ->suse_kabi_padding inherited from
+	 * the "parent" mm_struct.
+	 */
+	rcu_assign_pointer(mm->suse_kabi_padding, NULL);
+
 	if (kgr_meltdown_active() && user_pgd) {
 		memcpy(user_pgd + KERNEL_PGD_BOUNDARY,
 		     kgr_meltdown_shared_data->shadow_pgd + KERNEL_PGD_BOUNDARY,
 		     KERNEL_PGD_PTRS * sizeof(pgd_t));
-		mm->suse_kabi_padding = user_pgd;
+		rcu_assign_pointer(mm->suse_kabi_padding, user_pgd);
 	} else if (user_pgd) {
 		kgr__pgd_free(user_pgd);
 	}
