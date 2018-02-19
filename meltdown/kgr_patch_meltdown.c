@@ -93,10 +93,10 @@ void kgr_post_patch_callback(void)
 
 	pr_debug("kgr_post_patch_callback\n");
 
-	if (!ps)
+	if (!ps) {
 		return;
 
-	else if (ps == ps_enabled) {
+	} else if (ps == ps_enabled) {
 		if (kgr_meltdown_shared_data->dirty) {
 			/*
 			 * Unclean handover: there has been a revert inbetween
