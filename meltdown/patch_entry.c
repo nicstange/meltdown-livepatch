@@ -811,10 +811,15 @@ static void kick_all_owners(void)
 	read_unlock(kgr_tasklist_lock);
 }
 
+extern int (*kgr_schedule_on_each_cpu)(work_func_t func);
+
+static void __sync_dummy(struct work_struct *w)
+{}
+
 static void drain_work_fn(struct work_struct *work);
 static DECLARE_DELAYED_WORK(drain_work, drain_work_fn);
 
-void drain_work_fn(struct work_struct *work)
+static void drain_work_fn(struct work_struct *work)
 {
 	static bool printed = false;
 	if (any_in_entry()) {
@@ -829,6 +834,7 @@ void drain_work_fn(struct work_struct *work)
 		return;
 	}
 
+	kgr_schedule_on_each_cpu(__sync_dummy);
 	pr_info("entry code draining succeeded");
 	module_put(THIS_MODULE);
 }
