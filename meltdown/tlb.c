@@ -92,7 +92,7 @@ static inline void kgr__native_flush_tlb(void)
 	 * Fix CVE-2017-5754
 	 *  +1 line
 	 */
-	kaiser_flush_tlb_on_return_to_user();
+	kgr_kaiser_flush_tlb_on_return_to_user();
 	native_write_cr3(native_read_cr3());
 	preempt_enable();
 }
@@ -168,7 +168,7 @@ static inline void kgr__native_flush_tlb_single(unsigned long addr)
 	 */
 	unsigned long cr4 = this_cpu_read(cpu_tlbstate.cr4);
 	if (!this_cpu_has(X86_FEATURE_INVPCID) || !(cr4 & X86_CR4_PCIDE)) {
-		kaiser_flush_tlb_on_return_to_user();
+		kgr_kaiser_flush_tlb_on_return_to_user();
 		asm volatile("invlpg (%0)" ::"r" (addr) : "memory");
 		return;
 	}

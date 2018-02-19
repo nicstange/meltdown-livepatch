@@ -385,7 +385,7 @@ static inline void kgr_switch_mm(struct mm_struct *prev, struct mm_struct *next,
 			 * Fix CVE-2017-5754
 			 *  +1 line
 			 */
-			kaiser_flush_tlb_on_return_to_user();
+			kgr_kaiser_flush_tlb_on_return_to_user();
 			kgr_trace_tlb_flush(TLB_FLUSH_ON_TASK_SWITCH, TLB_FLUSH_ALL);
 			kgr_load_mm_cr4(next);
 			load_mm_ldt(next);

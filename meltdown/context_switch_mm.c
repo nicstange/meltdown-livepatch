@@ -60,7 +60,7 @@ static void sched_switch_tracer(void *data,
 			 * called leave_mm(), i.e. TLB flush IPIs have
 			 * arrived meanwhile.
 			 */
-			kaiser_flush_tlb_on_return_to_user();
+			kgr_kaiser_flush_tlb_on_return_to_user();
 		}
 	}
 }

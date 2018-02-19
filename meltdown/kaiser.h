@@ -101,7 +101,7 @@ static inline unsigned long kgr_kaiser_get_user_cr3(void)
 	return READ_ONCE(kgr_this_cpu_cr3s()->user_cr3);
 }
 
-static inline void kaiser_flush_tlb_on_return_to_user(void)
+static inline void kgr_kaiser_flush_tlb_on_return_to_user(void)
 {
 	unsigned long user_cr3 = kgr_kaiser_get_user_cr3();
 
