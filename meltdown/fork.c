@@ -1017,11 +1017,11 @@ static struct task_struct *kgr_dup_task_struct(struct task_struct *orig,
 	 *  +12 lines
 	 */
 	ps = kgr_meltdown_patch_state();
-	if (ps && ps >= ps_activating) {
+	if (ps >= ps_activating) {
 		err = kgr_kaiser_map_thread_stack(tsk->stack);
 		if (err)
 			goto free_ti;
-	} else {
+	} else if (ps == ps_enabled) {
 		/*
 		 * Make sure that kgr_kaiser_map_all_thread_stacks()
 		 * will find us.
