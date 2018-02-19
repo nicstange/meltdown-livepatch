@@ -12,6 +12,7 @@
 
 #include "calling.h"
 #include "patch_entry.h"
+#include "kaiser.h"
 
 #if !IS_ENABLED(CONFIG_X86_64)
 #error "Livepatch supports only CONFIG_X86_64=y"
@@ -46,6 +47,11 @@
 ENTRY(kgr_entry_SYSENTER_compat)
 	/* Interrupts are off on entry. */
 	SWAPGS_UNSAFE_STACK
+	/*
+	 * Fix CVE-2017-5754
+	 *  +1 line
+	 */
+	KGR_SWITCH_TO_KERNEL_CR3_NO_STACK
 	/* Patched: movq	PER_CPU_VAR(cpu_current_top_of_stack), %rsp */
 	KGR_CPU_VAR_LOAD64 kgr_cpu_tss KGR_REG_CODE_SP TSS_sp0
 
@@ -162,6 +168,11 @@ ENDPROC(kgr_entry_SYSENTER_compat)
 ENTRY(kgr_entry_SYSCALL_compat)
 	/* Interrupts are off on entry. */
 	SWAPGS_UNSAFE_STACK
+	/*
+	 * Fix CVE-2017-5754
+	 *  +1 line
+	 */
+	KGR_SWITCH_TO_KERNEL_CR3_NO_STACK
 
 	/* Stash user ESP and switch to the kernel stack. */
 	movl	%esp, %r8d
@@ -217,6 +228,11 @@ sysret32_from_system_call:
 	KGR_ENTRY_LEAVE
 
 	TRACE_IRQS_ON			/* User mode traces as IRQs on. */
+	/*
+	 * Fix CVE-2017-5754
+	 *  +1 line
+	 */
+	KGR_SWITCH_TO_USER_CR3
 	movq	RBX(%rsp), %rbx		/* pt_regs->rbx */
 	movq	RBP(%rsp), %rbp		/* pt_regs->rbp */
 	movq	EFLAGS(%rsp), %r11	/* pt_regs->flags (in r11) */
@@ -278,6 +294,11 @@ ENTRY(kgr_entry_INT80_compat)
 	PARAVIRT_ADJUST_EXCEPTION_FRAME
 	ASM_CLAC			/* Do this early to minimize exposure */
 	SWAPGS
+	/*
+	 * Fix CVE-2017-5754
+	 *  +1 line
+	 */
+	KGR_SWITCH_TO_KERNEL_CR3_NO_STACK
 
 	/*
 	 * User tracing code (ptrace or signal handlers) might assume that
@@ -326,6 +347,11 @@ ENTRY(kgr_entry_INT80_compat)
 
 	/* Go back to user mode. */
 	TRACE_IRQS_ON
+	/*
+	 * Fix CVE-2017-5754
+	 *  +1 line
+	 */
+	KGR_SWITCH_TO_USER_CR3
 	SWAPGS
 	jmp	kgr_restore_regs_and_iret
 END(kgr_entry_INT80_compat)

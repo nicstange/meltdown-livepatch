@@ -1,6 +1,8 @@
 #ifndef _KAISER_H
 #define _KAISER_H
 
+#ifndef __ASSEMBLY__
+
 #include <linux/percpu.h>
 #include <linux/mm_types.h>
 #include <linux/rcupdate.h>
@@ -18,6 +20,7 @@ struct kgr_pcpu_cr3s
 {
 	unsigned long kern_cr3;
 	unsigned long user_cr3;
+	unsigned long reg_backup;
 };
 
 extern struct kgr_pcpu_cr3s __percpu *__kgr_pcpu_cr3s;
@@ -157,5 +160,72 @@ static inline void kgr_pgd_clear(pgd_t *pgdp)
 {
 	kgr_set_pgd(pgdp, __pgd(0));
 }
+
+#else /* !__ASSEMBLY__ */
+
+#include "patch_entry.h"
+
+#define KGR_CPU_CR3S_KERN_OFF		0x0
+#define KGR_CPU_CR3S_USER_OFF		0x8
+#define KGR_CPU_CR3S_REG_BACKUP_OFF	0x10
+
+
+.macro KGR_MOV_TO_CR reg_code cr
+.ifge \reg_code - 8
+.error "reg_code must be < 8"
+.endif
+.byte 0x0f, 0x22 /* opcode */
+.byte ((\cr & 0x07) << 3) | \reg_code  /* Mod/RM */
+.endm
+
+.macro KGR_TEST_REG64 reg_code
+.ifge \reg_code - 8
+.error "reg_code must be < 8"
+.endif
+.byte 0x48  /* 64 bit operand size REX prefix */
+.byte 0x85 /* opcode */
+.byte (0x3 << 6) | ((\reg_code & 0x07) << 3) | \reg_code /* Mod/RM */
+.endm
+
+
+.macro _KGR_SWITCH_TO_KERNEL_CR3 reg_code
+	KGR_CPU_VAR_LOAD64 __kgr_pcpu_cr3s \reg_code KGR_CPU_CR3S_KERN_OFF
+	KGR_TEST_REG64 \reg_code
+	jz 48473f
+	KGR_MOV_TO_CR \reg_code 3
+48473:
+.endm
+
+.macro KGR_SWITCH_TO_KERNEL_CR3
+	pushq %rax
+	_KGR_SWITCH_TO_KERNEL_CR3 KGR_REG_CODE_AX
+	popq %rax
+.endm
+
+.macro KGR_SWITCH_TO_KERNEL_CR3_NO_STACK
+	KGR_CPU_VAR_STORE64 KGR_REG_CODE_AX __kgr_pcpu_cr3s KGR_CPU_CR3S_REG_BACKUP_OFF
+	_KGR_SWITCH_TO_KERNEL_CR3 KGR_REG_CODE_AX
+	KGR_CPU_VAR_LOAD64 __kgr_pcpu_cr3s KGR_REG_CODE_AX KGR_CPU_CR3S_REG_BACKUP_OFF
+.endm
+
+.macro _KGR_SWITCH_TO_USER_CR3 reg_code
+	KGR_CPU_VAR_LOAD64 __kgr_pcpu_cr3s \reg_code KGR_CPU_CR3S_USER_OFF
+	KGR_TEST_REG64 \reg_code
+	jz 48475f
+	js 48474f
+	/* If PCID enabled, FLUSH this time, reset to NOFLUSH for next time */
+	KGR_CPU_VAR_STORE8_OR \reg_code __kgr_pcpu_cr3s KGR_CPU_CR3S_USER_OFF+7
+48474:
+	KGR_MOV_TO_CR \reg_code 3
+48475:
+.endm
+
+.macro KGR_SWITCH_TO_USER_CR3
+	pushq %rax
+	_KGR_SWITCH_TO_USER_CR3 KGR_REG_CODE_AX
+	popq %rax
+.endm
+
+#endif /* __ASSEMBLY__ */
 
 #endif

@@ -65,6 +65,19 @@ __kgr_call_relocs_end:
 .popsection
 .endm
 
+.macro KGR_LEA_PATCH addr reg_code
+.byte 0x48 | ((\reg_code & 0x8) >> 1) /* 64 bit operand size REX prefix,
+					 and high bit Mod/RM reg field */
+.byte 0x8d /* opcode */
+.byte ((\reg_code & 0x07) << 3) | 0x5 /* Mod/RM: RIP-relative */
+524950:
+.int 0xdecafbad
+.pushsection .init.rodata, 524950, "a"
+	.quad 524950b
+	.quad \addr
+.popsection
+.endm
+
 
 .macro KGR_CPU_VAR_RELOCS_BEGIN
 .pushsection .init.rodata, 43505556, "a"
@@ -200,16 +213,6 @@ KGR_CPU_VAR_RELOC \var \offset
 KGR_CPU_VAR_RELOC \var \offset
 .endm
 
-.macro KGR_CPU_VAR_OR64 var reg_code offset=0
-.byte 0x65 /* GS segment prefix */
-.byte 0x48 | ((\reg_code & 0x8) >> 1) /* 64 bit operand size REX prefix,
-					 and high bit Mod/RM reg field */
-.byte 0x0b /* opcode */
-.byte 0x04 | ((\reg_code & 0x07) << 3) /* Mod/RM: SIB byte follows */
-.byte 0x25 /* SIB, use absolute offset ("disp32") */
-KGR_CPU_VAR_RELOC \var \offset
-.endm
-
 .macro KGR_CPU_VAR_ADD64_IMM32 imm32 var offset=0
 .byte 0x65 /* GS segment prefix */
 .byte 0x48 /* 64 bit operand size REX prefix */
@@ -230,6 +233,25 @@ KGR_CPU_VAR_RELOC \var \offset
 .int \imm32
 .endm
 
+.macro KGR_CPU_VAR_STORE8_OR reg_code var offset=0
+.byte 0x65 /* GS segment prefix */
+.byte 0x40 | ((\reg_code & 0x8) >> 1) /* REX prefix,
+					 high bit Mod/RM reg field */
+.byte 0x08 /* opcode */
+.byte 0x04 | ((\reg_code & 0x07) << 3) /* Mod/RM: SIB byte follows */
+.byte 0x25 /* SIB, use absolute offset ("disp32") */
+KGR_CPU_VAR_RELOC \var \offset
+.endm
+
+.macro KGR_CPU_VAR_LOAD64_XOR var reg_code offset=0
+.byte 0x65 /* GS segment prefix */
+.byte 0x48 | ((\reg_code & 0x8) >> 1) /* 64 bit operand size REX prefix,
+					 and high bit Mod/RM reg field */
+.byte 0x33 /* opcode */
+.byte 0x04 | ((\reg_code & 0x07) << 3) /* Mod/RM: SIB byte follows */
+.byte 0x25 /* SIB, use absolute offset ("disp32") */
+KGR_CPU_VAR_RELOC \var \offset
+.endm
 
 .macro KGR_ENTRY_ENTER offset=0
 	lock orl $KGR__TIF_OWNS_ENTRY_REFCNT, ASM_THREAD_INFO(TI_flags, %rsp, SIZEOF_PTREGS + \offset)

@@ -19,6 +19,7 @@
 #include <asm/page_64_types.h>
 #include "calling.h"
 #include "patch_entry.h"
+#include "kaiser.h"
 
 #if !IS_ENABLED(CONFIG_X86_64)
 #error "Livepatch supports only CONFIG_X86_64=y"
@@ -221,6 +222,11 @@ ENTRY(kgr_entry_SYSCALL_64)
 	 */
 	SWAPGS_UNSAFE_STACK
 	/*
+	 * Fix CVE-2017-5754
+	 *  +1 line
+	 */
+	KGR_SWITCH_TO_KERNEL_CR3_NO_STACK
+	/*
 	 * A hypervisor implementation might want to use a label
 	 * after the swapgs, so that it can do the swapgs
 	 * for the guest and jump here on syscall.
@@ -303,9 +309,25 @@ entry_SYSCALL_64_fastpath:
 	/* Patched */
 	KGR_ENTRY_LEAVE
 
-	RESTORE_C_REGS_EXCEPT_RCX_R11
+	/*
+	 * Fix CVE-2017-5754
+	 *  -1 line
+	 */
 	movq	RIP(%rsp), %rcx
 	movq	EFLAGS(%rsp), %r11
+	/*
+	 * Fix CVE-2017-5754
+	 *  +9 lines
+	 */
+	RESTORE_C_REGS_EXCEPT_RCX_R11
+	/*
+	 * This opens a window where we have a user CR3, but are
+	 * running in the kernel.  This makes using the CS
+	 * register useless for telling whether or not we need to
+	 * switch CR3 in NMIs.  Normal interrupts are OK because
+	 * they are off here.
+	 */
+	KGR_SWITCH_TO_USER_CR3
 	movq	RSP(%rsp), %rsp
 	/*
 	 * 64-bit SYSRET restores rip from rcx,
@@ -449,10 +471,30 @@ GLOBAL(kgr_int_ret_from_sys_call)
 syscall_return_via_sysret:
 	/* rcx and r11 are already restored (see code above) */
 	RESTORE_C_REGS_EXCEPT_RCX_R11
+	/*
+	 * This opens a window where we have a user CR3, but are
+	 * running in the kernel.  This makes using the CS
+	 * register useless for telling whether or not we need to
+	 * switch CR3 in NMIs.  Normal interrupts are OK because
+	 * they are off here.
+	 */
+	KGR_SWITCH_TO_USER_CR3
 	movq	RSP(%rsp), %rsp
 	USERGS_SYSRET64
 
 opportunistic_sysret_failed:
+	/*
+	 * Fix CVE-2017-5754
+	 *  +8 lines
+	 */
+	/*
+	 * This opens a window where we have a user CR3, but are
+	 * running in the kernel.  This makes using the CS
+	 * register useless for telling whether or not we need to
+	 * switch CR3 in NMIs.  Normal interrupts are OK because
+	 * they are off here.
+	 */
+	KGR_SWITCH_TO_USER_CR3
 	SWAPGS
 	jmp	restore_c_regs_and_iret
 END(kgr_entry_SYSCALL_64)
@@ -633,6 +675,11 @@ END(kgr_irq_entries_start)
 	 * tracking that we're in kernel mode.
 	 */
 	SWAPGS
+	/*
+	 * Fix CVE-2017-5754
+	 *  +1 line
+	 */
+	KGR_SWITCH_TO_KERNEL_CR3
 
 	/* Patched */
 	KGR_ENTRY_ENTER
@@ -702,6 +749,11 @@ GLOBAL(kgr_retint_user)
 	/* Patched */
 	KGR_ENTRY_LEAVE
 
+	/*
+	 * Fix CVE-2017-5754
+	 *  +1 line
+	 */
+	KGR_SWITCH_TO_USER_CR3
 	SWAPGS
 	jmp	kgr_restore_regs_and_iret
 
@@ -735,7 +787,7 @@ restore_c_regs_and_iret:
 	INTERRUPT_RETURN
 
 /* Dropped: native_iret */
-/* Dropped: native_irq_return_iret */
+/* Dropped: native_irq_return_ldt */
 END(common_interrupt)
 
 /*
@@ -1085,7 +1137,16 @@ kgr_do_machine_check_stub:
 /*
  * Save all registers in pt_regs, and switch gs if needed.
  * Use slow, but surefire "are we in kernel?" check.
- * Return: ebx=0: need swapgs on exit, ebx=1: otherwise
+ */
+/*
+ * Fix CVE-2017-5754
+ *  -1 line, +4 lines
+ */
+ /*
+ * Return: ebx=0: needs swapgs but not SWITCH_USER_CR3 in paranoid_exit
+ *         ebx=1: needs neither swapgs nor SWITCH_USER_CR3 in paranoid_exit
+ *         ebx=2: needs both swapgs and SWITCH_USER_CR3 in paranoid_exit
+ *         ebx=3: needs SWITCH_USER_CR3 but not swapgs in paranoid_exit
  */
 ENTRY(kgr_paranoid_entry)
 	cld
@@ -1098,7 +1159,41 @@ ENTRY(kgr_paranoid_entry)
 	js	1f				/* negative -> in kernel */
 	SWAPGS
 	xorl	%ebx, %ebx
-1:	ret
+	/*
+	 * Fix CVE-2017-5754
+	 *  -1 line, +31 lines
+	 */
+1:
+	/*
+	 * We might have come in between a swapgs and a SWITCH_KERNEL_CR3
+	 * on entry, or between a SWITCH_USER_CR3 and a swapgs on exit.
+	 * Do a conditional SWITCH_KERNEL_CR3: this could safely be done
+	 * unconditionally, but we need to find out whether the reverse
+	 * should be done on return (conveyed to paranoid_exit in %ebx).
+	 */
+	/* ALTERNATIVE "jmp 2f", "movq %cr3, %rax", X86_FEATURE_KAISER */
+	/* testl	$KAISER_SHADOW_PGD_OFFSET, %eax */
+	movq %cr3, %rax
+	KGR_CPU_VAR_LOAD64_XOR __kgr_pcpu_cr3s KGR_REG_CODE_AX KGR_CPU_CR3S_USER_OFF
+	/* clear NOFLUSH bit and set ZF */
+	shl $1, %rax
+	shr $1, %rax
+
+	jnz	2f
+	orl	$2, %ebx
+
+	/*
+	 * This is KGR_SWITCH_TO_KERNEL_CR3 without checking if the loaded
+	 * value is non-zero and without saving %rax.
+	 */
+	KGR_CPU_VAR_LOAD64 __kgr_pcpu_cr3s KGR_REG_CODE_AX KGR_CPU_CR3S_KERN_OFF
+	KGR_MOV_TO_CR KGR_REG_CODE_AX 3
+	/* andq	$(~(X86_CR3_PCID_ASID_MASK | KAISER_SHADOW_PGD_OFFSET)), %rax */
+	/* If PCID enabled, set X86_CR3_PCID_NOFLUSH_BIT */
+	/* ALTERNATIVE "", "bts $63, %rax", X86_FEATURE_PCID */
+	/* movq	%rax, %cr3 */
+2:
+	ret
 END(kgr_paranoid_entry)
 
 /*
@@ -1110,20 +1205,45 @@ END(kgr_paranoid_entry)
  * in syscall entry), so checking for preemption here would
  * be complicated.  Fortunately, we there's no good reason
  * to try to handle preemption here.
- *
- * On entry, ebx is "no swapgs" flag (1: don't need swapgs, 0: need it)
+ */
+/*
+ * Fix CVE-2017-5754
+ *  -1 line, +4 lines
+ */
+/*
+ * On entry: ebx=0: needs swapgs but not SWITCH_USER_CR3
+ *           ebx=1: needs neither swapgs nor SWITCH_USER_CR3
+ *           ebx=2: needs both swapgs and SWITCH_USER_CR3
+ *           ebx=3: needs SWITCH_USER_CR3 but not swapgs
  */
 ENTRY(kgr_paranoid_exit)
 	DISABLE_INTERRUPTS(CLBR_NONE)
 	TRACE_IRQS_OFF_DEBUG
-	testl	%ebx, %ebx			/* swapgs needed? */
-	jnz	paranoid_exit_no_swapgs
-	TRACE_IRQS_IRETQ
-	SWAPGS_UNSAFE_STACK
-	jmp	paranoid_exit_restore
-paranoid_exit_no_swapgs:
+	/*
+	 * Fix CVE-2017-5754
+	 *  -1 line, +6 lines
+	 */
 	TRACE_IRQS_IRETQ_DEBUG
-paranoid_exit_restore:
+	testl	$2, %ebx			/* SWITCH_USER_CR3 needed? */
+	jz	paranoid_exit_no_switch
+	KGR_SWITCH_TO_USER_CR3
+paranoid_exit_no_switch:
+	testl	$1, %ebx			/* swapgs needed? */
+	jnz	paranoid_exit_no_swapgs
+	/*
+	 * Fix CVE-2017-5754
+	 *  -1 line
+	 */
+	SWAPGS_UNSAFE_STACK
+	/*
+	 * Fix CVE-2017-5754
+	 *  -1 line
+	 */
+paranoid_exit_no_swapgs:
+	/*
+	 * Fix CVE-2017-5754
+	 *  -2 lines
+	 */
 	RESTORE_EXTRA_REGS
 	RESTORE_C_REGS
 	REMOVE_PT_GPREGS_FROM_STACK 8
@@ -1148,6 +1268,12 @@ ENTRY(kgr_error_entry)
 	 * from user mode due to an IRET fault.
 	 */
 	SWAPGS
+	/*
+	 * Fix CVE-2017-5754
+	 *  +1 line
+	 */
+	KGR_SWITCH_TO_KERNEL_CR3
+
 
 .Lerror_entry_from_usermode_after_swapgs:
 	/*
@@ -1176,14 +1302,14 @@ ENTRY(kgr_error_entry)
 .Lerror_kernelspace:
 	incl	%ebx
 	/* Patched: leaq	native_irq_return_iret(%rip), %rcx */
-	movq	kgr_native_irq_return_iret(%rip), %rcx
+	KGR_LEA_PATCH kgr_native_irq_return_iret KGR_REG_CODE_CX
 	cmpq	%rcx, RIP+8(%rsp)
 	je	.Lerror_bad_iret
 	movl	%ecx, %eax			/* zero extend */
 	cmpq	%rax, RIP+8(%rsp)
 	je	.Lbstep_iret
 	/* Patched: cmpq	$gs_change, RIP+8(%rsp) */
-	movq	kgr_gs_change(%rip), %rax
+	KGR_LEA_PATCH kgr_gs_change KGR_REG_CODE_AX
 	cmpq	%rax, RIP+8(%rsp)
 	jne	.Lerror_entry_done
 
@@ -1211,6 +1337,11 @@ ENTRY(kgr_error_entry)
 	 * Switch to kernel gsbase:
 	 */
 	SWAPGS
+	/*
+	 * Fix CVE-2017-5754
+	 *  +1 line
+	 */
+	KGR_SWITCH_TO_KERNEL_CR3
 
 	/*
 	 * Pretend that the exception came from user mode: set up pt_regs
@@ -1311,6 +1442,14 @@ ENTRY(kgr_nmi)
 	 */
 
 	SWAPGS_UNSAFE_STACK
+	/*
+	 * Fix CVE-2017-5754
+	 *  +4 lines
+	 */
+	/*
+	 * percpu variables are mapped with user CR3, so no need
+	 * to switch CR3 here.
+	 */
 	cld
 	movq	%rsp, %rdx
 	/* Patched: movq	PER_CPU_VAR(cpu_current_top_of_stack), %rsp */
@@ -1345,9 +1484,40 @@ ENTRY(kgr_nmi)
 
 	movq	%rsp, %rdi
 	movq	$-1, %rsi
+
+	/*
+	 * Fix CVE-2017-5754
+	 *  +11 lines
+	 */
+	/* Unconditionally use kernel CR3 for do_nmi() */
+	/* %rax is saved above, so OK to clobber here */
+	mov %cr3, %rcx
+	_KGR_SWITCH_TO_KERNEL_CR3 KGR_REG_CODE_AX
+	testq %rax, %rax
+	jz 21f
+	shr $63, %rax
+	shl $63, %rax
+	orq %rcx, %rax
+21:
+	pushq %rax
+
 	/* Patched: call	do_nmi */
 	KGR_CALL_PATCH kgr_do_nmi
 
+	/*
+	 * Fix CVE-2017-5754
+	 *  +10 lines
+	 */
+	/*
+	 * Unconditionally restore CR3.  I know we return to
+	 * kernel code that needs user CR3, but do we ever return
+	 * to "user mode" where we need the kernel CR3?
+	 */
+	popq %rax
+	testq %rax, %rax
+	jz 22f
+	mov %rax, %cr3
+22:
 	/*
 	 * Return back to user mode.  We must *not* do the normal exit
 	 * work, because we don't want to enable interrupts.  Fortunately,
@@ -1548,19 +1718,62 @@ end_repeat_nmi:
 	ALLOC_PT_GPREGS_ON_STACK
 
 	/*
-	 * Use paranoid_entry to handle SWAPGS, but no need to use paranoid_exit
-	 * as we should not be calling schedule in NMI context.
-	 * Even with normal interrupts enabled. An NMI should not be
-	 * setting NEED_RESCHED or anything that normal interrupts and
-	 * exceptions might do.
+	 * Fix CVE-2017-5754
+	 *  -10 lines, +19 lines
 	 */
-	call	kgr_paranoid_entry
-
-	/* paranoidentry do_nmi, 0; without TRACE_IRQS_OFF */
+	/*
+	 * Use the same approach as paranoid_entry to handle SWAPGS, but
+	 * without CR3 handling since we do that differently in NMIs.  No
+	 * need to use paranoid_exit as we should not be calling schedule
+	 * in NMI context.  Even with normal interrupts enabled. An NMI
+	 * should not be setting NEED_RESCHED or anything that normal
+	 * interrupts and exceptions might do.
+	 */
+	cld
+	SAVE_C_REGS
+	SAVE_EXTRA_REGS
+	movl	$1, %ebx
+	movl	$MSR_GS_BASE, %ecx
+	rdmsr
+	testl	%edx, %edx
+	js	1f				/* negative -> in kernel */
+	SWAPGS
+	xorl	%ebx, %ebx
+1:
 	movq	%rsp, %rdi
 	movq	$-1, %rsi
+
+	/*
+	 * Fix CVE-2017-5754
+	 *  +9 lines
+	 */
+	mov %cr3, %rcx
+	_KGR_SWITCH_TO_KERNEL_CR3 KGR_REG_CODE_AX
+	test %rax, %rax
+	jz 21f
+	shr $63, %rax
+	shl $63, %rax
+	orq %rcx, %rax
+21:
+	pushq %rax
+
 	/* Patched: call	do_nmi */
 	KGR_CALL_PATCH kgr_do_nmi
+
+	/*
+	 * Fix CVE-2017-5754
+	 *  +11 lines
+	 */
+	/*
+	 * Unconditionally restore CR3.  We might be returning to
+	 * kernel code that needs user CR3, like just just before
+	 * a sysret.
+	 */
+	popq %rax
+	testq %rax, %rax
+	jz 22f
+	mov %rax, %cr3
+22:
 
 	testl	%ebx, %ebx			/* swapgs needed? */
 	jnz	nmi_restore
