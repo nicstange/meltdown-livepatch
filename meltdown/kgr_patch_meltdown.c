@@ -236,16 +236,15 @@ int __init kgr_patch_meltdown_init(void)
 		return ret;
 	}
 
-	ret = patch_entry_init();
+	ret = kgr_kaiser_init();
 	if (ret) {
 		context_switch_mm_cleanup();
 		kgr_meltdown_shared_data_cleanup();
 		return ret;
 	}
 
-	ret = kgr_kaiser_init();
+	ret = patch_entry_init();
 	if (ret) {
-		patch_entry_cleanup();
 		context_switch_mm_cleanup();
 		kgr_meltdown_shared_data_cleanup();
 		return ret;
