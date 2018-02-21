@@ -1,0 +1,232 @@
+Livepatching Meltdown with KGraft
+=================================
+
+Livepatching entry code
+-----------------------
+The basic idea is to modify the IDT and the syscall related registers 
+to redirect them to a patched replacement.
+
+Challenge 1: patching in references to kallsyms-symbols
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Non-exported symbols are not available for relocation in
+modules. The way this is usually solved for livepatches is by
+looking up a symbol via kallsyms and referencing it
+indirectly. This indirect access needs to clobber a scratch
+register and there isn't always one available in entry code though.
+Also, there's a performance penalty associated with those
+indirections and entry code is a critical path.
+
+Solve this by looking up the needed symbols as usual but patching
+the relocations into the to be replaced entry code manually at
+module initialization.
+
+See `patch_entry.c` and `patch_entry.h`
+
+Challenge 2: let new forks return into the replaced entry code
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The `switch_to()` macro makes new forks jump to the `ret_from_fork`
+entry code symbol and `switch_to()` can't get KGraft-patched:
+http://www.linuxplumbersconf.org/2016/ocw/proposals/3567.html[Patching
+of scheduler functions]. Hack: one of the first things ret_from_fork
+does is to call `schedule_tail()` and this *is* livepatchable. Make
+`schedule_tail()` modify its return address to point into the replaced
+entry code.
+
+Challenge 3: make entry code replacement rmmodable
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+It must be avoided to unmap the replaced entry code while anybody
+might be either executing within or return to it.
+The guarantees made by the KGraft consistency model end at
+at `exit_to_usermode_loop()` and thus, don't cover entry code.
+After restoring the IDT and the syscall related registers, a
+`schedule_on_each_cpu()` will guarantee that
+- no new users will enter the replaced entry code
+- no interrupts are executing within the entry code replacement
+However, at this point it's still possible that tasks are sleeping
+in syscalls with a return address into the to be removed code on
+their stack.
+
+Solve this by introducing a reference count which gets incremented
+at entry and decremented again at exit. It's important that the
+increment happens before the first and the decrement after the last
+possibility to `schedule()`: after the counter has drained to zero,
+another `schedule_on_each_cpu()` will guarantee there there won't be
+any CPU executing in the to be unmapped entry code replacement.
+
+(For performance reasons, this reference counter is implemented as a
+ per-CPU long.)
+
+An additional complications are forks and exits: forks leave through
+the replaced entry code without having ever entered through it, for
+exits it's the other way around.
+
+For forks, it's easy: once the modified `schedule_tail()` from above
+decides that the new task should exit to userspace through the
+entry code replacement and changes its return address accordingly,
+it accounts for that by incrementing the reference count.
+
+Exits are a little bit different because a task might have entered
+through the refcount-protected entry code or not. To keep track of
+this, an "owns refcount" magic is stored in a task's unused
+`thread_info->flags` everytime the reference counter gets incremented
+on its behalf. A hook installed at the `sched_process_exit`
+tracepoint will check for that magic and decrement the reference
+counter if it find's one. (Doing it from a tracepoint hook rather
+than from some KGraft patched function in the exit path has the
+advantage not to introduce any ordering constraint on KGraft vs.
+entry code patch state).
+
+C.f. `KGR_ENTRY_ENTER`, `KGR_ENTRY_LEAVE`, `kgr_schedule_tail()`,
+`process_exit_tracer()`, (`process_fork_tracer()`),
+`patch_entry_drain_start()`.
+
+
+Livepatching Meltdown
+---------------------
+Overview
+~~~~~~~~
+Upstream KPTI allocates the kernel and user shadow PGD pages next to each other
+and switches between them by just flipping the bit at `PAGE_SHIFT`.
+
+For livepatching, this is not possible and whereas upstream PTI stores
+only PCID related bits in per-CPU variables, this liverpatch keeps the
+complete kernel and user CR3 values there:
+--------------------------------------
+struct kgr_pcpu_cr3s
+{
+  unsigned long kern_cr3;
+  unsigned long user_cr3;
+  unsigned long reg_backup;
+};
+--------------------------------------
+Their semantics are such that the patched entry codes ignores zero
+values and loads non-zero ones into CR3 on entry-from-user
+resp. exit-to-user as appropriate.
+
+For each `mm_struct`, a pointer to its shadow userspace PGD page is
+stored in its unused `->suse_kabi_padding` field.
+
+Note that it's possible to get from a kernel space PGD page to the
+owning `mm_struct` via its associated struct page's `->index`
+field, c.f. `pgd_ctor()` in the kernel.
+
+Achieving global state
+~~~~~~~~~~~~~~~~~~~~~~
+While KGraft switches implementations on a per task basis,
+installing and using a shadow userspace PGD must happen only once
+it is known that everybody will maintain it and thus keep it up to
+date. Since this maintenance will be done from KGraft-patched
+functions, this is equivalent to whether or not each and every task
+has transitioned to the new implementation.
+
+Similarly, for patching Meltdown, it's necessary to change the
+`CR4.PCIDE` and `CR4.PGE` bits in a way that renders the existing TLB
+flushing primitives invalid and thus, it must not be done before
+replacements being able to cope with both states have been installed.
+
+Unlike upstream livepatching, KGraft hasn't got post-patch or
+pre-unpatch callbacks. But fortunately, they can be emulated by
+KGraft-patching KGraft itself, namely `kgr_finalize()` and
+`kgr_modify_kernel`().
+
+States
+~~~~~~
+The following states will be used:
+--------------------------------------
+                    +-------->activating----------+
+                    |                             |
+                    |                             |
+    disabled----->enabled                         v
+                                                active
+                  enabled                         |
+                    ^                             |
+                    |                             |
+                    +--------deactivating<--------+
+--------------------------------------
+
+`enabled`::
+  Transitioned to from module's init if the system is viable for
+  patching Meltdown (read: not Xen, Intel CPU, has PCID).
+
+`activating`::
+  Transitioned to from the post-patch callback,
+  c.f. `kgr_post_patch_callback()`. Announced globally via
+  `schedule_on_each_cpu()`. (That same `schedule_on_each_cpu()` is
+  piggy-backed onto to fiddle with CR4 bits and install the entry code
+  replacement). Every KGraft-patched, PGD modifying function must
+  maintain the shadow userspace PGD once it encounters one in a state
+  starting from `activating`.
+
+`active`::
+  Also transitioned to from the post-patch callback, but only after
+  everybody has been notified of a state greater or equal to
+  `activating`, all task stacks and other required stuff have been
+  added to the userspace mapping.   
+  Seeing a state of `active` grants permission to install shadow
+  userspace PGDs and to switch the per-CPU CR3 variables to it.  See
+  invocations of `kgr_meltdown_active()`.
+
+`deactivating`::
+  Similar to `activating` (and in fact equal in value). Transitioned
+  to from the pre-revert callback,
+  c.f. `kgr_pre_revert_callback()`. Also announced globally via
+  `schedule_on_each_cpu()` (with restoring of IDT and CR4 piggy-backed
+  on it). In the same run, all per-CPU CR3 variables are reset to zero
+  and thus, once `schedule_on_each_cpu()` returns, there won't be any
+  users anymore.
+  In this state, every KGraft-patched, PGD modifying function must
+  continue to maintain any shadow userspace PGD it encounters.
+
+`enabled` again (Should really be "`inactive`", but has the same semantics `enabled`)::
+  Also transitioned to from the pre-revert callback. Userspace shadow
+  PGDs are unused and need not be kept up to date.
+
+Mapping partial page allocations (kmalloc()ed buffers)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Different from upstream KPTI, a livepatch has to deal with requests
+for mapping only portions of pages to userspace: for example, the LDT
+and `perf_event_intel_ds` memory is obtained through `kmalloc()` and
+this can't be changed.
+
+Unfortunately, a simple reference count per mapped page is not
+enough: during the transition periods it's possible to receive
+unmap requests for a region which hasn't ever been mapped.
+
+To deal with this, the KPTI shadow mapping scheme is extended for
+partial page mappings as follows: each such mapped page is
+accompanied with some bitmask tracking the partial allocations in
+units of 8 bytes, the granularity handed out by `kmalloc()`.
+
+Upon the first such allocation within a PTE page's covered range,
+an additional page with pointers to those bitmasks, one per PTE entry,
+is allocated and made available through the struct page's `->index` field
+associated with the PTE page. The lower twelve bits of `->index` serve
+as a reference count, i.e. equals the number of PTE entries with partial
+allocations within their covered range. This allows for getting rid
+of the "pointer page" once it isn't needed anymore.
+
+C.f. `get_page_alloc_track_locked()`, `unlock_page_alloc_track()`,
+`put_page_alloc_track()`, `page_alloc_track_add_range()`,
+`page_alloc_track_remove_range()`.
+
+Random notes
+------------
+- CPU hotplug is not supported
+
+- The handover-mechanism to livepatches stacked on top is only a
+  sketch and completely untested.
+
+Lastly, I don't like all the work done in `kgr_post_patch_callback()`:
+--------------------------------------
+kgr_kaiser_map_all_thread_stacks();
+kgr_perf_event_intel_map_all_ds_buffers();
+--------------------------------------
+because there's no sane way to recover from failure.  It would be
+better to let them do their allocations with `_GFP_NOFAIL` or so.
+Initially, this had been the idea behind the freelist argument to
+`__kgr_kaiser_create_shadow_pgd()`: by "carrying over" pages from the
+obsolete shadow PGD, it is guaranteed that
+`kgr_kaiser_reset_shadow_pgd()`, called indirectly from the post-patch
+callback in case there had been a revert, can't fail.  However, this
+doesn't apply to the above two.
