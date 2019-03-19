@@ -747,6 +747,12 @@ static int kgr_kaiser_prepopulate_shadow_pgd(pgd_t *shadow_pgd,
 	if (r)
 		return r;
 
+	r = kgr_kaiser_add_user_map_ptrs(shadow_pgd, __kgr_compat_entry_text_begin,
+					 __kgr_compat_entry_text_end,
+					 __PAGE_KERNEL_RX, freelist);
+	if (r)
+		return r;
+
 	r = kgr_kaiser_add_user_map(shadow_pgd, kgr_idt_table,
 				    sizeof(kgr_idt_table), __PAGE_KERNEL_RO,
 				    freelist);

@@ -41,6 +41,12 @@
 #error "Livepatch supports only CONFIG_IA32_EMULATION=y"
 #endif
 
+.code64
+.text
+.align PAGE_SIZE
+.global __kgr_compat_entry_text_begin
+__kgr_compat_entry_text_begin:
+
 /*
  * 32-bit SYSENTER instruction entry.
  *
@@ -374,3 +380,7 @@ ENTRY(kgr_entry_INT80_compat)
 	SWAPGS
 	jmp	kgr_restore_regs_and_iret
 END(kgr_entry_INT80_compat)
+
+.global __kgr_compat_entry_text_end
+.align PAGE_SIZE
+__kgr_compat_entry_text_end:

@@ -291,6 +291,8 @@ extern bool patch_entry_draining;
 
 extern char __kgr_entry_text_begin[];
 extern char __kgr_entry_text_end[];
+extern char __kgr_compat_entry_text_begin[];
+extern char __kgr_compat_entry_text_end[];
 
 extern gate_desc kgr_idt_table[NR_VECTORS];
 extern gate_desc kgr_debug_idt_table[NR_VECTORS];
