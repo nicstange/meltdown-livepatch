@@ -43,27 +43,18 @@ struct kgr_cpu_var_reloc
 	unsigned int pad2;
 };
 
-extern const  struct kgr_call_reloc __kgr_call_relocs_begin __initconst;
-extern const struct kgr_call_reloc __kgr_call_relocs_end __initconst;
+extern const  struct kgr_call_reloc __kgr_call_relocs_begin_entry __initconst;
+extern const struct kgr_call_reloc __kgr_call_relocs_end_entry __initconst;
 
-static const struct kgr_call_reloc *kgr_call_relocs_begin __initconst =
-	&__kgr_call_relocs_begin;
-static const struct kgr_call_reloc *kgr_call_relocs_end __initconst=
-	&__kgr_call_relocs_end;
+extern const struct kgr_cpu_var_reloc __kgr_cpu_var_relocs_begin_entry __initconst;
+extern const struct kgr_cpu_var_reloc __kgr_cpu_var_relocs_end_entry __initconst;
 
+extern const  struct kgr_call_reloc __kgr_call_relocs_begin_compat_entry __initconst;
+extern const struct kgr_call_reloc __kgr_call_relocs_end_compat_entry __initconst;
 
-extern const struct kgr_cpu_var_reloc __kgr_cpu_var_relocs_begin __initconst;
-extern const struct kgr_cpu_var_reloc __kgr_cpu_var_relocs_end __initconst;
+extern const struct kgr_cpu_var_reloc __kgr_cpu_var_relocs_begin_compat_entry __initconst;
+extern const struct kgr_cpu_var_reloc __kgr_cpu_var_relocs_end_compat_entry __initconst;
 
-static const struct kgr_cpu_var_reloc *kgr_cpu_var_relocs_begin __initconst=
-	&__kgr_cpu_var_relocs_begin;
-static const struct kgr_cpu_var_reloc *kgr_cpu_var_relocs_end __initconst=
-	&__kgr_cpu_var_relocs_end;
-
-unsigned long kgr_entry_text_begin __initconst =
-	(unsigned long)__kgr_entry_text_begin;
-unsigned long kgr_entry_text_end __initconst =
-	(unsigned long)__kgr_entry_text_end;
 
 int (*kgr_core_kernel_text)(unsigned long addr);
 int (*kgr_set_memory_rw)(unsigned long addr, int numpages);
@@ -126,23 +117,28 @@ kgr_cpu_var_reloc_address(const struct kgr_cpu_var_reloc *rel)
 }
 
 
-static int __init patch_entry_text(void)
+static int __init __patch_entry_text(unsigned long text_begin,
+			unsigned long text_end,
+			const struct kgr_call_reloc *call_relocs_begin,
+			const struct kgr_call_reloc *call_relocs_end,
+			const struct kgr_cpu_var_reloc *cpu_var_relocs_begin,
+			const struct kgr_cpu_var_reloc *cpu_var_relocs_end)
 {
 	const struct kgr_call_reloc *call_rel;
 	const struct kgr_cpu_var_reloc *pcpu_rel;
 	const int nr_text_pages =
-		(kgr_entry_text_end - kgr_entry_text_begin) >> PAGE_SHIFT;
+		(text_end - text_begin) >> PAGE_SHIFT;
 	int ret;
 
 	/* Sanity check: make sure that all addresses are valid */
-	if ((kgr_entry_text_begin & ~PAGE_MASK) ||
-	    (kgr_entry_text_end & ~PAGE_MASK)) {
+	if ((text_begin & ~PAGE_MASK) ||
+	    (text_end & ~PAGE_MASK)) {
 		pr_err("unexpected alignment of KGraft entry code\n");
 		return -EINVAL;
 	}
 
-	for (call_rel = kgr_call_relocs_begin;
-	     call_rel != kgr_call_relocs_end; ++call_rel) {
+	for (call_rel = call_relocs_begin;
+	     call_rel != call_relocs_end; ++call_rel) {
 		const unsigned int address = kgr_call_reloc_address(call_rel);
 		if (!address)
 			return -EINVAL;
@@ -152,8 +148,8 @@ static int __init patch_entry_text(void)
 		}
 	}
 
-	for (pcpu_rel = kgr_cpu_var_relocs_begin;
-	     pcpu_rel != kgr_cpu_var_relocs_end; ++pcpu_rel) {
+	for (pcpu_rel = cpu_var_relocs_begin;
+	     pcpu_rel != cpu_var_relocs_end; ++pcpu_rel) {
 		const unsigned int address =
 			kgr_cpu_var_reloc_address(pcpu_rel);
 		if (!address)
@@ -165,21 +161,21 @@ static int __init patch_entry_text(void)
 	}
 
 	/* Actually patch the code */
-	ret = kgr_set_memory_rw(kgr_entry_text_begin, nr_text_pages);
+	ret = kgr_set_memory_rw(text_begin, nr_text_pages);
 	if (ret)
 		return ret;
-	for (call_rel = kgr_call_relocs_begin;
-	     call_rel != kgr_call_relocs_end; ++call_rel) {
+	for (call_rel = call_relocs_begin;
+	     call_rel != call_relocs_end; ++call_rel) {
 		const unsigned int address = kgr_call_reloc_address(call_rel);
 		memcpy((void*)call_rel->location, &address, sizeof(address));
 	}
-	for (pcpu_rel = kgr_cpu_var_relocs_begin;
-	     pcpu_rel != kgr_cpu_var_relocs_end; ++pcpu_rel) {
+	for (pcpu_rel = cpu_var_relocs_begin;
+	     pcpu_rel != cpu_var_relocs_end; ++pcpu_rel) {
 		const unsigned int address =
 			kgr_cpu_var_reloc_address(pcpu_rel);
 		memcpy((void*)pcpu_rel->location, &address, sizeof(address));
 	}
-	ret = set_memory_x(kgr_entry_text_begin, nr_text_pages);
+	ret = set_memory_x(text_begin, nr_text_pages);
 	if (ret)
 		return ret;
 
@@ -188,7 +184,34 @@ static int __init patch_entry_text(void)
 	 * Because the pages had been executable before and speculative
 	 * execution might have put something into the icache?
 	 */
-	flush_icache_range(kgr_entry_text_begin, kgr_entry_text_end);
+	flush_icache_range(text_begin, text_end);
+
+	return 0;
+}
+
+static int __init patch_entry_text(void)
+{
+	int ret;
+
+	ret = __patch_entry_text(
+		(unsigned long)__kgr_entry_text_begin,
+		(unsigned long)__kgr_entry_text_end,
+		&__kgr_call_relocs_begin_entry,
+		&__kgr_call_relocs_end_entry,
+		&__kgr_cpu_var_relocs_begin_entry,
+		&__kgr_cpu_var_relocs_end_entry);
+	if (ret)
+		return ret;
+
+	ret = __patch_entry_text(
+		(unsigned long)__kgr_compat_entry_text_begin,
+		(unsigned long)__kgr_compat_entry_text_end,
+		&__kgr_call_relocs_begin_compat_entry,
+		&__kgr_call_relocs_end_compat_entry,
+		&__kgr_cpu_var_relocs_begin_compat_entry,
+		&__kgr_cpu_var_relocs_end_compat_entry);
+	if (ret)
+		return ret;
 
 	return 0;
 }

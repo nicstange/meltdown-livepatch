@@ -149,8 +149,8 @@
 
 .section .init.rodata, "a"
 
-KGR_CALL_RELOCS_BEGIN
-KGR_CPU_VAR_RELOCS_BEGIN
+KGR_CALL_RELOCS_BEGIN entry
+KGR_CPU_VAR_RELOCS_BEGIN entry
 
 .code64
 .text
@@ -1825,8 +1825,8 @@ nmi_restore:
 END(kgr_nmi)
 
 
-KGR_CALL_RELOCS_END
-KGR_CPU_VAR_RELOCS_END
+KGR_CALL_RELOCS_END entry
+KGR_CPU_VAR_RELOCS_END entry
 
 .global __kgr_entry_text_end
 .align PAGE_SIZE

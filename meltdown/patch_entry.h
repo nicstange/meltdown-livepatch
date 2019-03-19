@@ -30,18 +30,18 @@
 	(_TIF_ALLWORK_MASK & ~KGR__TIF_OWNS_ENTRY_REFCNT_MASK)
 
 
-.macro KGR_CALL_RELOCS_BEGIN
+.macro KGR_CALL_RELOCS_BEGIN name
 .pushsection .init.rodata, 524950
-.global __kgr_call_relocs_begin
+.global __kgr_call_relocs_begin_\name
 .align 8
-__kgr_call_relocs_begin:
+ __kgr_call_relocs_begin_\name:
 .popsection
 .endm
 
-.macro KGR_CALL_RELOCS_END
-.global __kgr_call_relocs_end
+.macro KGR_CALL_RELOCS_END name
+.global __kgr_call_relocs_end_\name
 .pushsection .init.rodata, 524950
-__kgr_call_relocs_end:
+__kgr_call_relocs_end_\name:
 .popsection
 .endm
 
@@ -79,18 +79,18 @@ __kgr_call_relocs_end:
 .endm
 
 
-.macro KGR_CPU_VAR_RELOCS_BEGIN
+.macro KGR_CPU_VAR_RELOCS_BEGIN name
 .pushsection .init.rodata, 43505556, "a"
-.global __kgr_cpu_var_relocs_begin
+.global __kgr_cpu_var_relocs_begin_\name
 .align 8
-__kgr_cpu_var_relocs_begin:
+__kgr_cpu_var_relocs_begin_\name:
 .popsection
 .endm
 
-.macro KGR_CPU_VAR_RELOCS_END
+.macro KGR_CPU_VAR_RELOCS_END name
 .pushsection .init.rodata, 43505556, "a"
-.global __kgr_cpu_var_relocs_end
-__kgr_cpu_var_relocs_end:
+.global __kgr_cpu_var_relocs_end_\name
+__kgr_cpu_var_relocs_end_\name:
 .popsection
 .endm
 

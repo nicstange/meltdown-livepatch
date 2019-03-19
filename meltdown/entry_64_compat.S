@@ -41,6 +41,11 @@
 #error "Livepatch supports only CONFIG_IA32_EMULATION=y"
 #endif
 
+.section .init.rodata, "a"
+
+KGR_CALL_RELOCS_BEGIN compat_entry
+KGR_CPU_VAR_RELOCS_BEGIN compat_entry
+
 .code64
 .text
 .align PAGE_SIZE
@@ -384,3 +389,6 @@ END(kgr_entry_INT80_compat)
 .global __kgr_compat_entry_text_end
 .align PAGE_SIZE
 __kgr_compat_entry_text_end:
+
+KGR_CALL_RELOCS_END compat_entry
+KGR_CPU_VAR_RELOCS_END compat_entry
